@@ -74,6 +74,12 @@ Generates high-resolution multi-page PDF reports using `html2canvas` and `jsPDF`
 * Exposes a `📥 PDF` button on each history item row for instant PDF exports.
 
 ---
+<img width="1123" height="573" alt="image" src="https://github.com/user-attachments/assets/a31e8533-43f7-4dca-8cdb-0644cb47a006" />
+<img width="1123" height="680" alt="Screenshot 2026-06-15 170809" src="https://github.com/user-attachments/assets/4a78e9dc-b526-401c-9a7d-d814d20b9128" />
+<img width="1112" height="552" alt="Screenshot 2026-06-15 170921" src="https://github.com/user-attachments/assets/8e52bdbc-f3ce-4ed2-ae9d-48790040cb3f" />
+
+
+
 
 ## Setup & Setup Dependencies
 
