@@ -36,6 +36,16 @@ const ASSET_TYPES = [
 
 const CURRENCIES = ["INR", "USD", "GBP", "EUR", "HKD", "SGD", "JPY", "AUD"];
 
+const SECTORS = [
+  "Technology", "Financial Services", "Energy", "Healthcare", "Consumer Cyclical",
+  "Industrials", "Consumer Defensive", "Utilities", "Basic Materials", "Real Estate", "Communication Services"
+];
+
+function getCurrencySymbol(currencyVal) {
+  const symbolMap = { INR: "₹", USD: "$", GBP: "£", EUR: "€", JPY: "¥", AUD: "A$", HKD: "HK$", SGD: "S$" };
+  return symbolMap[currencyVal] || (currencyVal ? currencyVal + " " : "");
+}
+
 const regionCol = { "US":C.blue, "Europe":"#8B5CF6", "Asia":C.cyan, "Global":C.gold, "India":C.green };
 function exCol(id){ 
   if (id === "NSE" || id === "BSE") return C.green;
@@ -106,6 +116,145 @@ function fmt(pct, portfolio, currencyVal) {
   return pct + "% of portfolio";
 }
 
+function getYahooFinanceSymbol(symbol, exchange, marketFocus) {
+  const sym = symbol ? symbol.trim().toUpperCase() : "";
+  if (marketFocus === "indian") {
+    if (exchange === "BSE") {
+      return `${sym}.BO`;
+    }
+    return `${sym}.NS`;
+  }
+  
+  if (exchange === "INDEX") {
+    const indexMap = {
+      "S&P 500": "^GSPC",
+      "SPX": "^GSPC",
+      "NASDAQ 100": "^NDX",
+      "NDX": "^NDX",
+      "FTSE 100": "^FTSE",
+      "DAX 40": "^GDAXI",
+      "NIKKEI 225": "^N225",
+      "HANG SENG": "^HSI",
+      "MSCI WORLD": "URTH"
+    };
+    return indexMap[sym] || sym;
+  }
+
+  const suffixMap = {
+    LSE: ".L",
+    XETRA: ".DE",
+    EURONEXT: ".PA",
+    HKEX: ".HK",
+    SGX: ".SI",
+    TSE: ".T",
+    ASX: ".AX"
+  };
+  const suffix = suffixMap[exchange] || "";
+  
+  if (exchange === "HKEX" && /^\d+$/.test(sym)) {
+    return `${sym.padStart(4, "0")}.HK`;
+  }
+  
+  return suffix ? `${sym}${suffix}` : sym;
+}
+
+async function fetchLivePrice(symbol, exchange, marketFocus, dataProvider = "yahoo_chart", twelvedataKey = "", alphavantageKey = "") {
+  if (dataProvider === "twelvedata") {
+    if (!twelvedataKey) return { error: "API_KEY_MISSING", message: "Twelve Data API Key is missing. Add it in AI Engine Config." };
+    try {
+      const res = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(twelvedataKey)}`);
+      if (!res.ok) return { error: "API_ERROR", status: res.status };
+      const data = await res.json();
+      if (data.status === "error") return { error: "API_ERROR_RESPONSE", message: data.message };
+      if (data.symbol && data.close) {
+        return {
+          data: {
+            ltp: parseFloat(parseFloat(data.close).toFixed(2)),
+            fiftyTwoWeekHigh: data.fifty_two_week?.high ? parseFloat(parseFloat(data.fifty_two_week.high).toFixed(2)) : null,
+            fiftyTwoWeekLow: data.fifty_two_week?.low ? parseFloat(parseFloat(data.fifty_two_week.low).toFixed(2)) : null,
+            currency: data.currency || null,
+            displayName: data.name || null
+          }
+        };
+      } else {
+        return { error: "SYMBOL_NOT_FOUND" };
+      }
+    } catch (err) {
+      console.warn("Twelve Data fetch failed:", err);
+      return { error: "NETWORK_ERROR", message: err.message };
+    }
+  }
+
+  if (dataProvider === "alphavantage") {
+    if (!alphavantageKey) return { error: "API_KEY_MISSING", message: "Alpha Vantage API Key is missing. Add it in AI Engine Config." };
+    let avSymbol = symbol.trim().toUpperCase();
+    if (marketFocus === "indian") {
+      if (!avSymbol.endsWith(".BSE") && !avSymbol.endsWith(".NSE") && !avSymbol.endsWith(".NS") && !avSymbol.endsWith(".BO")) {
+        avSymbol = `${avSymbol}.BSE`; // BSE has better coverage in Alpha Vantage free tier
+      } else {
+        avSymbol = avSymbol.replace(".NS", ".BSE").replace(".BO", ".BSE");
+      }
+    }
+    try {
+      const res = await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(avSymbol)}&apikey=${encodeURIComponent(alphavantageKey)}`);
+      if (!res.ok) return { error: "API_ERROR", status: res.status };
+      const data = await res.json();
+      if (data["Note"]) return { error: "API_RATE_LIMIT", message: data["Note"] };
+      const quote = data["Global Quote"];
+      if (quote && quote["05. price"]) {
+        const price = parseFloat(quote["05. price"]);
+        const high = quote["03. high"] ? parseFloat(quote["03. high"]) : price;
+        const low = quote["04. low"] ? parseFloat(quote["04. low"]) : price;
+        return {
+          data: {
+            ltp: parseFloat(price.toFixed(2)),
+            fiftyTwoWeekHigh: parseFloat(high.toFixed(2)),
+            fiftyTwoWeekLow: parseFloat(low.toFixed(2)),
+            currency: marketFocus === "indian" ? "INR" : null,
+            displayName: quote["01. symbol"] || null
+          }
+        };
+      } else {
+        return { error: "SYMBOL_NOT_FOUND" };
+      }
+    } catch (err) {
+      console.warn("Alpha Vantage fetch failed:", err);
+      return { error: "NETWORK_ERROR", message: err.message };
+    }
+  }
+
+  // Default: yahoo_chart
+  const yahooSymbol = getYahooFinanceSymbol(symbol, exchange, marketFocus);
+  if (!yahooSymbol) return { error: "INVALID_SYMBOL_FORMAT" };
+  
+  try {
+    const res = await fetch(`/api/yahoo/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=1d`);
+    if (!res.ok) {
+      console.warn("Yahoo Finance HTTP error:", res.status);
+      return { error: "API_ERROR", status: res.status };
+    }
+    const data = await res.json();
+    const result = data.chart?.result?.[0];
+    if (result && result.meta) {
+      const meta = result.meta;
+      return {
+        data: {
+          ltp: meta.regularMarketPrice ? parseFloat(meta.regularMarketPrice.toFixed(2)) : null,
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ? parseFloat(meta.fiftyTwoWeekHigh.toFixed(2)) : null,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow ? parseFloat(meta.fiftyTwoWeekLow.toFixed(2)) : null,
+          currency: meta.currency || null,
+          displayName: meta.longName || meta.shortName || null
+        }
+      };
+    } else {
+      return { error: "SYMBOL_NOT_FOUND" };
+    }
+  } catch (err) {
+    console.warn("Failed to fetch live price from Yahoo Finance Chart API:", err);
+    return { error: "NETWORK_ERROR", message: err.message };
+  }
+}
+
 // ─── MOCK ENGINE (INDIAN & GLOBAL) ───────────────────────────
 function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchange, assetType, currency) {
   const stockClean = name.trim().toUpperCase();
@@ -119,6 +268,9 @@ function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchan
         symbol: "RELIANCE",
         sector: "Energy, Retail & Telecom",
         marketCap: "Large Cap",
+        ltp: 2450.75,
+        fiftyTwoWeekHigh: 2755.00,
+        fiftyTwoWeekLow: 2220.10,
         ltScore: 8.7,
         stScore: 7.2,
         ltVerdict: "BUY",
@@ -157,6 +309,9 @@ function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchan
         symbol: "IREDA",
         sector: "Renewable Energy & Power",
         marketCap: "Mid Cap",
+        ltp: 236.40,
+        fiftyTwoWeekHigh: 310.00,
+        fiftyTwoWeekLow: 120.50,
         ltScore: 8.4,
         stScore: 9.2,
         ltVerdict: "BUY",
@@ -196,6 +351,9 @@ function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchan
         symbol: "AAPL",
         sector: "Consumer Electronics & Services",
         marketCap: "Mega Cap",
+        ltp: 185.50,
+        fiftyTwoWeekHigh: 199.62,
+        fiftyTwoWeekLow: 164.08,
         ltScore: 8.9,
         stScore: 7.5,
         ltVerdict: "BUY",
@@ -246,6 +404,11 @@ function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchan
   const mcap = (hash % 4 === 0) ? "Large Cap" : (hash % 4 === 1) ? "Mid Cap" : (hash % 4 === 2) ? "Small Cap" : "Micro Cap";
   const sector = SECTORS[hash % SECTORS.length];
   
+  const basePrice = 50 + (hash % 1500);
+  const ltp = parseFloat((basePrice + (hash % 99) / 100).toFixed(2));
+  const fiftyTwoWeekHigh = parseFloat((ltp * (1.1 + (hash % 30) / 100)).toFixed(2));
+  const fiftyTwoWeekLow = parseFloat((ltp * (0.6 + (hash % 25) / 100)).toFixed(2));
+
   const rawLtScore = 5.2 + (hash % 42) / 10;
   const rawStScore = 4.8 + ((hash >> 2) % 45) / 10;
   const ltScore = parseFloat(rawLtScore.toFixed(1));
@@ -352,6 +515,9 @@ function getMockAnalysis(name, marketFocus, mode, portfolio, riskProfile, exchan
     sector: sector,
     marketCap: mcap,
     currency: currency,
+    ltp: ltp,
+    fiftyTwoWeekHigh: fiftyTwoWeekHigh,
+    fiftyTwoWeekLow: fiftyTwoWeekLow,
     ltScore: ltScore,
     stScore: stScore,
     ltVerdict: ltVerdict,
@@ -518,6 +684,10 @@ export default function StockIntelligenceEngine() {
   const [mode, setMode]           = useState("both");
   const [portfolio, setPortfolio] = useState("");
   const [riskProfile, setRiskProfile] = useState("moderate");
+  const [enableWebSearch, setEnableWebSearch] = useState(true);
+  const [webSources, setWebSources] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState([]);
+  const [loadingTimer, setLoadingTimer] = useState(20);
 
   // Global specific fields
   const [exchange, setExchange]   = useState("NSE");
@@ -566,9 +736,15 @@ export default function StockIntelligenceEngine() {
   const [localModel, setLocalModel] = useState(() => localStorage.getItem("stock_scanner_local_model") || "llama3");
   const [localEndpoint, setLocalEndpoint] = useState(() => localStorage.getItem("stock_scanner_local_endpoint") || "http://localhost:11434");
 
+  const [dataProvider, setDataProvider] = useState(() => localStorage.getItem("stock_scanner_data_provider") || "yahoo_chart");
+  const [twelvedataKey, setTwelvedataKey] = useState(() => localStorage.getItem("stock_scanner_twelvedata_key") || "");
+  const [alphavantageKey, setAlphavantageKey] = useState(() => localStorage.getItem("stock_scanner_alphavantage_key") || "");
+
   const [showSettings, setShowSettings] = useState(false);
 
   const timerRef = useRef(null);
+  const countdownIntervalRef = useRef(null);
+  const logSimIntervalRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -580,20 +756,56 @@ export default function StockIntelligenceEngine() {
 
   const STEPS = ["Business Moat","Growth Metrics","Balance Sheet","Return Ratios","Valuation","Governance Profile","Sector Tailwind","Technical Check","Institutional flow","Risk Sizing"];
 
+  // Auto-scroll loading console
+  useEffect(() => {
+    const consoleEl = document.getElementById("console-logs-container");
+    if (consoleEl) {
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+  }, [loadingLogs]);
+
+  // Fetch web news
+  async function fetchWebNews(symbol, exchange, marketFocus) {
+    let yahooSymbol = symbol;
+    if (marketFocus === "indian") {
+      yahooSymbol = symbol.toUpperCase().endsWith(".NS") || symbol.toUpperCase().endsWith(".BO")
+        ? symbol.toUpperCase()
+        : `${symbol.toUpperCase()}.NS`;
+    } else {
+      yahooSymbol = symbol.toUpperCase();
+    }
+    try {
+      const res = await fetch(`/api/yahoo/v1/finance/search?q=${encodeURIComponent(yahooSymbol)}&newsCount=6`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return data.news || [];
+    } catch (err) {
+      console.warn("Failed to fetch news from Yahoo Finance search API:", err);
+      return [];
+    }
+  }
+
   // ── run loading animation ──
   function startLoading() {
     setPhase("loading");
     setError("");
+    setLoadingLogs([]);
+    setLoadingTimer(20);
     let s = 0;
-    timerRef.current = setInterval(()=>{ setLoadStep(s); s=(s+1)%10; }, 400);
+    timerRef.current = setInterval(()=>{ setLoadStep(s); s=(s+1)%10; }, 450);
+    countdownIntervalRef.current = setInterval(() => {
+      setLoadingTimer(prev => (prev > 1 ? prev - 1 : 1));
+    }, 1000);
   }
   function stopLoading() {
     clearInterval(timerRef.current);
+    clearInterval(countdownIntervalRef.current);
+    clearInterval(logSimIntervalRef.current);
     setLoadStep(0);
   }
 
   // ── SYSTEM PROMPTS ──
-  const SYSTEM_INDIA = `You are an expert Indian stock market analyst with 20+ years of NSE/BSE experience. Analyse stocks across a strict 10-point framework and return ONLY valid JSON — no markdown, no preamble.
+  const SYSTEM_INDIA = `In NO Circumstances while on a Live API will the AI give incorrect information or guidance. You are an expert Indian stock market analyst with 20+ years of NSE/BSE experience. Analyse stocks across a strict 10-point framework and return ONLY valid JSON — no markdown, no preamble.
 
 FRAMEWORK:
 1. Business Quality & Moat — competitive advantage, pricing power, brand, IP, market leadership
@@ -609,9 +821,11 @@ FRAMEWORK:
 
 SCORING: Each criterion → PASS(1.0) / PARTIAL(0.5) / FAIL(0.0). LT score weights quality criteria 1,3,4,6 more. ST score weights momentum criteria 2,5,8,9 more. Be specific, honest and balanced. Use knowledge up to mid-2026.
 
+CRITICAL SAFETY: In NO Circumstances while on a Live API will the AI give incorrect information or guidance. You must verify facts using the real-time context data provided in the user message, and you must never make up, guess, or assume metrics. If the pricing data provided indicates a penny stock (e.g. LTP under ₹15) or an unstable company with failing metrics, you MUST give realistic ratings, highlight the extreme instability in key risks, and under no circumstances recommend it as a Buy or Strong Buy (assign AVOID/WATCH verdict instead).
+
 CRITICAL: Keep each "analysis" field to 1-2 short sentences. Keep "keyPoints" to max 2 items, each under 10 words. Keep "redFlags" to max 1 item. Keep "finalRecommendation" to 2 sentences. Keep all string values concise. The entire JSON must fit within 6000 tokens.`;
 
-  const SYSTEM_GLOBAL = `You are a world-class global equity and index analyst with 25 years of experience across NYSE, NASDAQ, LSE, XETRA, HKEX, SGX, and major global indices. You analyse assets using a strict 10-point global framework and return ONLY valid JSON — no markdown, no preamble.
+  const SYSTEM_GLOBAL = `In NO Circumstances while on a Live API will the AI give incorrect information or guidance. You are a world-class global equity and index analyst with 25 years of experience across NYSE, NASDAQ, LSE, XETRA, HKEX, SGX, and major global indices. You analyse assets using a strict 10-point global framework and return ONLY valid JSON — no markdown, no preamble.
 
 GLOBAL 10-POINT FRAMEWORK:
 1. Business Moat & Global Competitiveness — brand, network effect, IP, switching costs, regulatory moat at global scale
@@ -627,11 +841,13 @@ GLOBAL 10-POINT FRAMEWORK:
 
 For INDICES and ETFs: adapt scoring to macro/breadth metrics rather than single-company fundamentals.
 
-SCORING: PASS=1.0, PARTIAL=0.5, FAIL=0.0 per criterion for LT and ST independently. LT weights quality criteria 1,3,4,6 most. ST weights momentum criteria 2,5,7,8,9 most. Be specific, honest, balanced. Use knowledge up to mid-2026. Keep responses concise. Total JSON must fit within 6000 tokens.`;
+SCORING: PASS=1.0, PARTIAL=0.5, FAIL=0.0 per criterion for LT and ST independently. LT weights quality criteria 1,3,4,6 most. ST weights momentum criteria 2,5,7,8,9 most. Be specific, honest, balanced. Use knowledge up to mid-2026. Keep responses concise. Total JSON must fit within 6000 tokens.
+
+CRITICAL SAFETY: In NO Circumstances while on a Live API will the AI give incorrect information or guidance. You must verify facts using the real-time context data provided in the user message, and you must never make up, guess, or assume metrics. If the pricing data provided indicates a penny stock or highly unstable asset, you MUST give realistic ratings, highlight the extreme instability in key risks, and under no circumstances recommend it as a Buy or Strong Buy.`;
 
   // ── RUN ANALYSIS ──
-  async function runAnalysis() {
-    const s = stock.trim();
+  async function runAnalysis(overrideStock) {
+    const s = typeof overrideStock === "string" ? overrideStock.trim() : stock.trim();
     if (!s) { setError("Please enter a ticker symbol or company name."); return; }
     setError("");
 
@@ -642,11 +858,105 @@ SCORING: PASS=1.0, PARTIAL=0.5, FAIL=0.0 per criterion for LT and ST independent
                    : mode==="lt"   ? "Long Term (1 year+)"
                                    : "Short Term (up to 3 months, 20%+ target)";
 
-    let userMsg = "";
-    if (isInd) {
-      userMsg = `Analyse Indian stock: "${s}" for ${modeText}.
-${port ? `Investor portfolio: ₹${port.toLocaleString("en-IN")}.` : "Portfolio size not specified."}
+    // Start loading and clear logs
+    startLoading();
+    
+    const startTime = Date.now();
+    const getElapsed = () => ((Date.now() - startTime) / 1000).toFixed(1) + "s";
+    const appendLog = (msg) => {
+      setLoadingLogs(prev => [...prev, `[${getElapsed()}] ${msg}`]);
+    };
+
+    appendLog(`🟢 Initializing Real-Time Web Analysis for: ${s.toUpperCase()}`);
+
+    try {
+      // 1. Fetch live market price
+      const providerLabel = dataProvider === "yahoo_chart" ? "Yahoo Finance" : dataProvider === "twelvedata" ? "Twelve Data" : "Alpha Vantage";
+      appendLog(`🔍 Accessing real-time market data feed from ${providerLabel}...`);
+      const livePriceResult = await fetchLivePrice(s, isInd ? "NSE" : exchange, marketFocus, dataProvider, twelvedataKey, alphavantageKey);
+      
+      let livePrice = null;
+      if (livePriceResult && !livePriceResult.error) {
+        livePrice = livePriceResult.data;
+      }
+
+      // If we are in Live API mode (not demo), we enforce successful real-time quote resolution
+      if (provider !== "demo") {
+        if (!livePriceResult || livePriceResult.error) {
+          if (livePriceResult && livePriceResult.error === "SYMBOL_NOT_FOUND") {
+            throw new Error(`Ticker symbol "${s.toUpperCase()}" not found on the exchange. Please check spelling or ensure market focus (NSE/BSE vs. Global) is set correctly.`);
+          } else {
+            const detail = livePriceResult 
+              ? (livePriceResult.message || `${livePriceResult.error}${livePriceResult.status ? ` HTTP ${livePriceResult.status}` : ""}`) 
+              : "Network Timeout";
+            throw new Error(`Failed to retrieve real-time market data: ${detail}. Live scans require active pricing context. Please check your settings, API keys, or switch to Demo mode.`);
+          }
+        }
+      }
+
+      if (livePrice) {
+        appendLog(`📈 Live Quote Loaded: LTP: ${livePrice.currency || (isInd ? "INR" : currency)} ${livePrice.ltp} (Range: ${livePrice.fiftyTwoWeekLow || "—"} - ${livePrice.fiftyTwoWeekHigh || "—"})`);
+      } else {
+        appendLog("⚠ Real-time market price request timed out. Using default base values for demo.");
+      }
+
+      // 2. Fetch news sources if web search is enabled
+      let newsItems = [];
+      if (enableWebSearch) {
+        appendLog("🌐 Accessing real-time web sentiment and articles...");
+        newsItems = await fetchWebNews(s, isInd ? "NSE" : exchange, marketFocus);
+        if (newsItems.length > 0) {
+          appendLog(`📰 Retrieved ${newsItems.length} recent articles/sentiment sources from the web.`);
+          newsItems.forEach((n, idx) => {
+            appendLog(`📄 Source [0${idx+1}]: "${n.title}" (${n.publisher})`);
+          });
+          setWebSources(newsItems);
+        } else {
+          appendLog("⚠ No recent news articles or sentiment indicators found for this symbol on the web.");
+          setWebSources([]);
+        }
+      } else {
+        appendLog("ℹ Real-time web search is disabled. Skipping web article retrieval.");
+        setWebSources([]);
+      }
+
+      // 3. Compile Context
+      appendLog("🧠 Assembling final evaluation packet...");
+      
+      let priceContext = "";
+      if (livePrice) {
+        priceContext = `
+CRITICAL REAL-TIME PRICE INFO (from Live API):
+- Last Traded Price (LTP): ${livePrice.currency || (isInd ? "INR" : currency)} ${livePrice.ltp}
+- 52-Week High: ${livePrice.currency || (isInd ? "INR" : currency)} ${livePrice.fiftyTwoWeekHigh}
+- 52-Week Low: ${livePrice.currency || (isInd ? "INR" : currency)} ${livePrice.fiftyTwoWeekLow}
+
+You MUST use these exact real-time pricing figures for your analysis and calculations (such as P/E ratio, PEG ratio, discount/premium evaluation, and stop-loss targets). Do not use or invent other prices. Make sure to echo these identical values back in your JSON response for "ltp", "fiftyTwoWeekHigh", and "fiftyTwoWeekLow".
+`;
+      }
+
+      let newsContext = "";
+      if (enableWebSearch && newsItems.length > 0) {
+        newsContext = `
+CRITICAL LATEST NEWS & WEB SENTIMENT CONTEXT:
+The following recent news articles and financial updates for ${s.toUpperCase()} were fetched from the live web. Use these to enrich your analysis of catalysts, risks, and final recommendation.
+${newsItems.map((n, idx) => `[News Source ${idx+1}]
+- Title: ${n.title}
+- Publisher: ${n.publisher}
+- Date: ${new Date(n.providerPublishTime * 1000).toLocaleDateString()}
+- Link: ${n.link}`).join("\n\n")}
+
+CRITICAL INSTRUCTION: Analyze the sentiment, risks, and tailwinds from these latest articles. Incorporate specific references to these recent developments (e.g. news about earnings, product launches, partnerships, regulatory changes, or macroeconomic impacts) in your final recommendation, risk assessment, and catalyst points. Citing recent actual developments makes your report significantly more credible.
+`;
+      }
+
+      let userMsg = "";
+      if (isInd) {
+        userMsg = `Analyse Indian stock: "${s}" for ${modeText}.
+Investor portfolio: ₹${port ? port.toLocaleString("en-IN") : "Portfolio size not specified."}.
 Investor risk profile: ${riskProfile}.
+${priceContext}
+${newsContext}
 
 Return EXACTLY this JSON (no extra keys, no markdown):
 {
@@ -654,6 +964,9 @@ Return EXACTLY this JSON (no extra keys, no markdown):
   "symbol": "NSE symbol",
   "sector": "Sector",
   "marketCap": "Large Cap / Mid Cap / Small Cap / Micro Cap",
+  "ltp": ${livePrice ? livePrice.ltp : 2450.50},
+  "fiftyTwoWeekHigh": ${livePrice ? livePrice.fiftyTwoWeekHigh : 2700.00},
+  "fiftyTwoWeekLow": ${livePrice ? livePrice.fiftyTwoWeekLow : 1950.00},
   "ltScore": <0-10 one decimal>,
   "stScore": <0-10 one decimal>,
   "ltVerdict": "STRONG BUY" or "BUY" or "WATCH" or "AVOID",
@@ -683,11 +996,13 @@ Return EXACTLY this JSON (no extra keys, no markdown):
   "keyRisks": ["risk 1", "risk 2"],
   "catalysts": ["catalyst 1", "catalyst 2"]
 }`;
-    } else {
-      userMsg = `Analyse the global ${assetType}: "${s}" listed on ${exchange} for ${modeText}.
-${port ? `Investor portfolio value: ${currency} ${port.toLocaleString()}.` : "Portfolio size not specified."}
+      } else {
+        userMsg = `Analyse the global ${assetType}: "${s}" listed on ${exchange} for ${modeText}.
+Investor portfolio value: ${currency} ${port ? port.toLocaleString() : "Portfolio size not specified."}.
 Report currency: ${currency}.
 Asset type: ${assetType}.
+${priceContext}
+${newsContext}
 
 Return EXACTLY this JSON (no extra keys, no markdown):
 {
@@ -698,6 +1013,9 @@ Return EXACTLY this JSON (no extra keys, no markdown):
   "sector": "Sector or index category",
   "marketCap": "Mega/Large/Mid/Small Cap or Index",
   "currency": "${currency}",
+  "ltp": ${livePrice ? livePrice.ltp : 185.30},
+  "fiftyTwoWeekHigh": ${livePrice ? livePrice.fiftyTwoWeekHigh : 195.00},
+  "fiftyTwoWeekLow": ${livePrice ? livePrice.fiftyTwoWeekLow : 165.00},
   "currentPriceNote": "Approximate price level or range as of mid-2026 (e.g. ~$185, ~22,000 pts)",
   "ltScore": <0.0-10.0>,
   "stScore": <0.0-10.0>,
@@ -734,291 +1052,85 @@ Return EXACTLY this JSON (no extra keys, no markdown):
   "keyRisks": ["risk 1", "risk 2"],
   "catalysts": ["catalyst 1", "catalyst 2"]
 }`;
-    }
-
-    // 1. Handle Demo / Mock Mode
-    if (provider === "demo") {
-      startLoading();
-      await new Promise(resolve => setTimeout(resolve, 3500));
-      try {
-        const mockData = getMockAnalysis(s, marketFocus, mode, port, riskProfile, exchange, assetType, currency);
-        stopLoading();
-        setResult(mockData);
-        setPhase("results");
-        setHistory(h => [{
-          assetName: mockData.stockName || mockData.assetName,
-          ticker: mockData.symbol || mockData.ticker,
-          exchange: isInd ? "NSE" : exchange,
-          assetType: isInd ? "stock" : assetType,
-          mode,
-          ltScore: mockData.ltScore,
-          stScore: mockData.stScore,
-          ltVerdict: mockData.ltVerdict,
-          stVerdict: mockData.stVerdict,
-          date: new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}),
-          timestamp: Date.now(),
-          result: mockData,
-          portfolio: port,
-          currency: isInd ? "INR" : currency,
-          riskProfile
-        }, ...h]);
-      } catch (e) {
-        stopLoading();
-        setPhase("input");
-        setError("Analysis failed: " + e.message);
       }
-      return;
-    }
 
-    // 2. Handle API mode setup
-    startLoading();
+      const modelLabel = provider === "demo" ? "Local Simulator" : provider.toUpperCase();
+      appendLog(`⚡ Dispatching context to ${modelLabel}...`);
+      appendLog("⏳ Running Professional 10-Point Scoring Framework...");
 
-    try {
-      let parsed = null;
+      // Start simulating background updates while waiting
+      let stepNum = 0;
+      const simMsgs = [
+        "⏳ AI evaluates Business Moat and Intellectual Property barriers...",
+        "⏳ AI calculates Revenue growth patterns & target operating margins...",
+        "⏳ AI evaluates Leverage ratios, Debt/Equity & FCF profiles...",
+        "⏳ AI checks Return ratios (sustained ROE/ROCE > 15% thresholds)...",
+        "⏳ AI compares Valuation PEG ratios vs historical standard deviation...",
+        "⏳ AI checks promoter quality indicators & clean SEBI records...",
+        "⏳ AI scans policy updates (PLI, exports, green energy tailwinds)...",
+        "⏳ AI runs Technical Setup checks (50/200 DMA overlays, RSI indicators)...",
+        "⏳ AI checks smart money and institutional block transaction volume...",
+        "⏳ AI aggregates scoring matrix weights and designs stop-loss targets..."
+      ];
+
+      logSimIntervalRef.current = setInterval(() => {
+        if (stepNum < simMsgs.length) {
+          appendLog(simMsgs[stepNum]);
+          stepNum++;
+        }
+      }, 1200);
+
+      // Now run the actual AI request or simulation
+      let parsedResult;
+      if (provider === "demo") {
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        parsedResult = getMockAnalysis(s, marketFocus, mode, port, riskProfile, exchange, assetType, currency);
+        if (livePrice) {
+          parsedResult.ltp = livePrice.ltp;
+          parsedResult.fiftyTwoWeekHigh = livePrice.fiftyTwoWeekHigh;
+          parsedResult.fiftyTwoWeekLow = livePrice.fiftyTwoWeekLow;
+          if (livePrice.currency) {
+            parsedResult.currency = livePrice.currency;
+          }
+        }
+      } else {
+        parsedResult = await requestLLM(SYSTEM, userMsg);
+        if (livePrice) {
+          parsedResult.ltp = livePrice.ltp;
+          parsedResult.fiftyTwoWeekHigh = livePrice.fiftyTwoWeekHigh;
+          parsedResult.fiftyTwoWeekLow = livePrice.fiftyTwoWeekLow;
+          if (livePrice.currency) {
+            parsedResult.currency = livePrice.currency;
+          }
+        }
+      }
+
+      appendLog("✅ Analysis successfully finalized! Rendering results dashboard.");
+      clearInterval(logSimIntervalRef.current);
       
-      if (provider === "anthropic") {
-        if (!anthropicKey) {
-          throw new Error("Anthropic API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-        
-        const response = await fetch("/api/anthropic/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-            "x-api-key": anthropicKey
-          },
-          body: JSON.stringify({
-            model: anthropicModel,
-            max_tokens: 4000,
-            system: SYSTEM,
-            messages: [{ role:"user", content: userMsg }]
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = (data.content||[]).map(b=>b.text||"").join("");
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "gemini") {
-        if (!geminiKey) {
-          throw new Error("Gemini API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-
-        const response = await fetch(`/api/gemini/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `${SYSTEM}\n\nUser Message:\n${userMsg}`
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              responseMimeType: "application/json",
-              temperature: 0.2
-            }
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "openai") {
-        if (!openaiKey) {
-          throw new Error("OpenAI API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-
-        const response = await fetch("/api/openai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${openaiKey}`
-          },
-          body: JSON.stringify({
-            model: openaiModel,
-            messages: [
-              { role: "system", content: SYSTEM },
-              { role: "user", content: userMsg }
-            ],
-            response_format: { type: "json_object" },
-            temperature: 0.2
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.choices?.[0]?.message?.content || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "openrouter") {
-        if (!openrouterKey) {
-          throw new Error("OpenRouter API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-
-        const response = await fetch("/api/openrouter/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${openrouterKey}`,
-            "HTTP-Referer": "http://localhost:5173",
-            "X-Title": "Stock Scanner"
-          },
-          body: JSON.stringify({
-            model: openrouterModel,
-            messages: [
-              { role: "system", content: SYSTEM },
-              { role: "user", content: userMsg }
-            ],
-            temperature: 0.2
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.choices?.[0]?.message?.content || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "kimi") {
-        if (!kimiKey) {
-          throw new Error("Kimi API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-
-        const response = await fetch("/api/kimi/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${kimiKey}`
-          },
-          body: JSON.stringify({
-            model: kimiModel,
-            messages: [
-              { role: "system", content: SYSTEM },
-              { role: "user", content: userMsg }
-            ],
-            temperature: 0.3
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.choices?.[0]?.message?.content || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "glm") {
-        if (!glmKey) {
-          throw new Error("GLM API Key is missing. Add it in 'AI Engine Config' above.");
-        }
-
-        const response = await fetch("/api/glm/v4/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${glmKey}`
-          },
-          body: JSON.stringify({
-            model: glmModel,
-            messages: [
-              { role: "system", content: SYSTEM },
-              { role: "user", content: userMsg }
-            ],
-            temperature: 0.2
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(()=>({}));
-          throw new Error(err.error?.message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.choices?.[0]?.message?.content || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-
-      } else if (provider === "local") {
-        const url = `${localEndpoint.replace(/\/$/, '')}/v1/chat/completions`;
-        const localHeaders = { "Content-Type": "application/json" };
-        if (localKey) {
-          localHeaders["Authorization"] = `Bearer ${localKey}`;
-        }
-
-        const response = await fetch(url, {
-          method: "POST",
-          headers: localHeaders,
-          body: JSON.stringify({
-            model: localModel,
-            messages: [
-              { role: "system", content: SYSTEM },
-              { role: "user", content: userMsg }
-            ],
-            temperature: 0.2
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.text().catch(()=>"");
-          throw new Error(err || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        let text = data.choices?.[0]?.message?.content || "";
-        text = text.replace(/```json\n?/g,"").replace(/```\n?/g,"").trim();
-        parsed = repairJSON(text);
-      }
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       stopLoading();
-      setResult(parsed);
+      setResult(parsedResult);
       setPhase("results");
 
       const entry = {
-        assetName: parsed.stockName || parsed.assetName || s.toUpperCase(),
-        ticker: parsed.symbol || parsed.ticker || s.toUpperCase(),
+        assetName: parsedResult.stockName || parsedResult.assetName || s.toUpperCase(),
+        ticker: parsedResult.symbol || parsedResult.ticker || s.toUpperCase(),
         exchange: isInd ? "NSE" : exchange,
         assetType: isInd ? "stock" : assetType,
         mode,
-        ltScore: parsed.ltScore,
-        stScore: parsed.stScore,
-        ltVerdict: parsed.ltVerdict,
-        stVerdict: parsed.stVerdict,
+        ltScore: parsedResult.ltScore,
+        stScore: parsedResult.stScore,
+        ltVerdict: parsedResult.ltVerdict,
+        stVerdict: parsedResult.stVerdict,
         date: new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}),
         timestamp: Date.now(),
-        result: parsed,
+        result: parsedResult,
         portfolio: port,
         currency: isInd ? "INR" : currency,
-        riskProfile
+        riskProfile,
+        webSources: newsItems
       };
       setHistory(h => [entry, ...h]);
 
@@ -1027,6 +1139,150 @@ Return EXACTLY this JSON (no extra keys, no markdown):
       setPhase("input");
       setError("Analysis failed: " + err.message);
     }
+  }
+
+  async function requestLLM(systemPrompt, userMessage) {
+    if (provider === "demo") {
+      throw new Error("Cannot run live LLM requests in Demo mode.");
+    }
+    
+    let text = "";
+    
+    if (provider === "anthropic") {
+      if (!anthropicKey) throw new Error("Anthropic API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch("/api/anthropic/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "x-api-key": anthropicKey
+        },
+        body: JSON.stringify({
+          model: anthropicModel,
+          max_tokens: 4000,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userMessage }]
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = (data.content || []).map(b => b.text || "").join("");
+    } else if (provider === "gemini") {
+      if (!geminiKey) throw new Error("Gemini API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch(`/api/gemini/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `${systemPrompt}\n\nUser Message:\n${userMessage}` }] }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    } else if (provider === "openai") {
+      if (!openaiKey) throw new Error("OpenAI API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch("/api/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openaiKey}` },
+        body: JSON.stringify({
+          model: openaiModel,
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+          response_format: { type: "json_object" },
+          temperature: 0.2
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.choices?.[0]?.message?.content || "";
+    } else if (provider === "openrouter") {
+      if (!openrouterKey) throw new Error("OpenRouter API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch("/api/openrouter/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${openrouterKey}`,
+          "HTTP-Referer": "http://localhost:5173",
+          "X-Title": "Stock Scanner"
+        },
+        body: JSON.stringify({
+          model: openrouterModel,
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+          temperature: 0.2
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.choices?.[0]?.message?.content || "";
+    } else if (provider === "kimi") {
+      if (!kimiKey) throw new Error("Kimi API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch("/api/kimi/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${kimiKey}` },
+        body: JSON.stringify({
+          model: kimiModel,
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+          temperature: 0.3
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.choices?.[0]?.message?.content || "";
+    } else if (provider === "glm") {
+      if (!glmKey) throw new Error("GLM API Key is missing. Add it in 'AI Engine Config' above.");
+      const response = await fetch("/api/glm/v4/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${glmKey}` },
+        body: JSON.stringify({
+          model: glmModel,
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+          temperature: 0.2
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.choices?.[0]?.message?.content || "";
+    } else if (provider === "local") {
+      const url = `${localEndpoint.replace(/\/$/, '')}/v1/chat/completions`;
+      const localHeaders = { "Content-Type": "application/json" };
+      if (localKey) localHeaders["Authorization"] = `Bearer ${localKey}`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: localHeaders,
+        body: JSON.stringify({
+          model: localModel,
+          messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+          temperature: 0.2
+        })
+      });
+      if (!response.ok) {
+        const err = await response.text().catch(() => "");
+        throw new Error(err || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      text = data.choices?.[0]?.message?.content || "";
+    }
+    
+    text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    return repairJSON(text);
   }
 
   // ── JSON repair: handle truncated responses ──
@@ -1046,7 +1302,7 @@ Return EXACTLY this JSON (no extra keys, no markdown):
     throw new Error("AI response could not be parsed. Please try again.");
   }
 
-  function resetAnalysis() { setPhase("input"); setResult(null); setStock(""); setPortfolio(""); setError(""); }
+  function resetAnalysis() { setPhase("input"); setResult(null); setStock(""); setPortfolio(""); setError(""); setWebSources([]); setLoadingLogs([]); }
 
   async function handleDownloadPDF(entry) {
     if (isPrinting) return;
@@ -1087,7 +1343,9 @@ Return EXACTLY this JSON (no extra keys, no markdown):
         heightLeft -= pageHeight;
       }
       
-      const fileName = `${(entry.ticker || entry.symbol || "REPORT").toUpperCase()}_Scan_Report_${entry.date || "Download"}.pdf`;
+      const safeTicker = (entry.ticker || entry.symbol || "REPORT").toUpperCase().replace(/[^A-Z0-9-]/g, "_");
+      const safeDate = (entry.date || "Download").replace(/[^a-zA-Z0-9-]/g, "_");
+      const fileName = `${safeTicker}_Scan_Report_${safeDate}.pdf`;
       pdf.save(fileName);
     } catch (err) {
       console.error("PDF generation failed:", err);
@@ -1111,6 +1369,71 @@ Return EXACTLY this JSON (no extra keys, no markdown):
         *{box-sizing:border-box;}
         ::-webkit-scrollbar{width:6px;} ::-webkit-scrollbar-track{background:#1a1a1a;} ::-webkit-scrollbar-thumb{background:#F4C430;}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+        
+        .loading-container {
+          display: flex;
+          gap: 20px;
+          flex-direction: row;
+          background: #000;
+          border: 3px solid #000;
+          box-shadow: 5px 5px 0px #0A0A0A;
+          padding: 24px;
+          margin-bottom: 20px;
+        }
+        .loading-info {
+          flex: 1 1 300px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+        .loading-console {
+          flex: 1.2 1 360px;
+          background: #0d0d0d;
+          border: 2px solid #333;
+          padding: 14px;
+          height: 260px;
+          overflow-y: auto;
+          font-family: 'Space Mono', monospace;
+          font-size: 10px;
+          color: #00FF66;
+          text-align: left;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        
+        .results-container {
+          display: flex;
+          gap: 20px;
+          flex-direction: row;
+          align-items: flex-start;
+        }
+        .results-main {
+          flex: 2 1 500px;
+          min-width: 0;
+          width: 100%;
+        }
+        .results-sidebar {
+          flex: 1 1 300px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          position: sticky;
+          top: 70px;
+        }
+        
+        @media (max-width: 850px) {
+          .results-container {
+            flex-direction: column;
+          }
+          .results-sidebar {
+            position: static;
+          }
+          .loading-container {
+            flex-direction: column;
+          }
+        }
       `}</style>
 
       {/* HEADER */}
@@ -1203,10 +1526,24 @@ Return EXACTLY this JSON (no extra keys, no markdown):
                   <select value={geminiModel} onChange={e => setGeminiModel(e.target.value)} style={{
                     width: "100%", background: "#222", border: "2px solid #444", color: C.white, padding: "8px 10px", outline: "none", cursor: "pointer", fontSize: 11
                   }}>
-                    <option value="gemini-3.5-flash">gemini-3.5-flash (Recommended)</option>
-                    <option value="gemini-1.5-flash">gemini-1.5-flash (Fast & Economic)</option>
-                    <option value="gemini-1.5-pro">gemini-1.5-pro (High intelligence)</option>
-                    <option value="gemini-2.0-flash">gemini-2.0-flash (Newest & Fast)</option>
+                    <option value="gemini-3.5-flash">Gemini 3.5 Flash (Recommended)</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                    <option value="gemma-4-31b">Gemma 4 31B</option>
+                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                    <option value="gemini-2.0-flash">Gemini 2 Flash</option>
+                    <option value="gemini-2.0-flash-lite">Gemini 2 Flash Lite</option>
+                    <option value="gemini-2.5-flash-tts">Gemini 2.5 Flash TTS</option>
+                    <option value="gemini-2.5-pro-tts">Gemini 2.5 Pro TTS</option>
+                    <option value="imagen-4-generate">Imagen 4 Generate</option>
+                    <option value="imagen-4-ultra-generate">Imagen 4 Ultra Generate</option>
+                    <option value="imagen-4-fast-generate">Imagen 4 Fast Generate</option>
+                    <option value="gemma-4-26b">Gemma 4 26B</option>
+                    <option value="text-embedding-004">Gemini Embedding 1</option>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                    <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
+                    <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                    <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
                   </select>
                 </div>
               )}
@@ -1341,13 +1678,51 @@ Return EXACTLY this JSON (no extra keys, no markdown):
                 </span>
               </div>
             )}
+
+            {/* Financial Data Provider Settings */}
+            <div style={{borderTop: "1px solid #333", paddingTop: 14, marginTop: 4}}>
+              <div style={{fontFamily: "'Space Mono', monospace", fontSize: 10, color: C.gold, fontWeight: 700, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1}}>
+                📈 Financial Data Feed Settings
+              </div>
+              <div style={{display: "flex", gap: 12, flexWrap: "wrap"}}>
+                <div style={{flex: "1 1 200px"}}>
+                  <label style={{fontFamily: "'Space Mono', monospace", fontSize: 9, color: C.gold, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1}}>Data Feed Provider</label>
+                  <select value={dataProvider} onChange={e => { setDataProvider(e.target.value); localStorage.setItem("stock_scanner_data_provider", e.target.value); }} style={{
+                    width: "100%", background: "#222", border: "2px solid #444", color: C.white, padding: "8px 10px", outline: "none", cursor: "pointer", fontSize: 11
+                  }}>
+                    <option value="yahoo_chart">Yahoo Finance (Chart API - Free, No Key)</option>
+                    <option value="twelvedata">Twelve Data (Official - Free/Pro Key)</option>
+                    <option value="alphavantage">Alpha Vantage (Official - Free Key)</option>
+                  </select>
+                </div>
+
+                {dataProvider === "twelvedata" && (
+                  <div style={{flex: "1 1 200px"}}>
+                    <label style={{fontFamily: "'Space Mono', monospace", fontSize: 9, color: C.gold, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1}}>Twelve Data API Key</label>
+                    <input type="password" value={twelvedataKey} onChange={e => { setTwelvedataKey(e.target.value); localStorage.setItem("stock_scanner_twelvedata_key", e.target.value); }} placeholder="Enter Twelve Data API Key..." style={{
+                      width: "100%", background: "#222", border: "2px solid #444", color: C.white, padding: "9px 10px", outline: "none", fontSize: 11, letterSpacing: 1.5
+                    }} />
+                  </div>
+                )}
+
+                {dataProvider === "alphavantage" && (
+                  <div style={{flex: "1 1 200px"}}>
+                    <label style={{fontFamily: "'Space Mono', monospace", fontSize: 9, color: C.gold, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1}}>Alpha Vantage API Key</label>
+                    <input type="password" value={alphavantageKey} onChange={e => { setAlphavantageKey(e.target.value); localStorage.setItem("stock_scanner_alphavantage_key", e.target.value); }} placeholder="Enter Alpha Vantage API Key..." style={{
+                      width: "100%", background: "#222", border: "2px solid #444", color: C.white, padding: "9px 10px", outline: "none", fontSize: 11, letterSpacing: 1.5
+                    }} />
+                  </div>
+                )}
+              </div>
+            </div>
+
           </div>
         )}
       </div>
 
       {/* TAB NAV */}
       <div style={{display:"flex",borderBottom:`3px solid ${C.black}`,background:C.white,position:"sticky",top:0,zIndex:100}}>
-        {[["analyse","AI Analyser"],["history","History"],["framework","Framework"]].map(([id,label])=>(
+        {[["analyse","AI Analyser"],["predictions","Top Picks"],["history","History"],["framework","Framework"]].map(([id,label])=>(
           <button key={id} onClick={()=>setActiveTab(id)} style={{fontFamily:"'Space Mono',monospace",fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",padding:"12px 16px",border:"none",borderRight:`2px solid ${C.black}`,flex:1,cursor:"pointer",background:activeTab===id?C.black:C.white,color:activeTab===id?C.gold:C.mid,transition:"all 0.15s"}}>
             {label}
           </button>
@@ -1449,6 +1824,49 @@ Return EXACTLY this JSON (no extra keys, no markdown):
                   </div>
                 </div>
 
+                {/* Options Row: Risk Profile & Web Search Toggle */}
+                <div style={{marginTop:12, display:"flex", gap:16, flexWrap:"wrap"}}>
+                  {/* Risk Profile Selection */}
+                  <div style={{flex:"1 1 200px"}}>
+                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,letterSpacing:2,textTransform:"uppercase",color:"#777",marginBottom:6}}>Risk Profile</div>
+                    <div style={{display:"flex", border:`2px solid #444`, background:"#1a1a1a"}}>
+                      {["conservative", "moderate", "aggressive"].map(rp => (
+                        <button key={rp} type="button" onClick={() => setRiskProfile(rp)} disabled={phase==="loading"}
+                          style={{
+                            flex: 1, padding: "8px 10px", border: "none",
+                            borderRight: rp !== "aggressive" ? "1px solid #444" : "none",
+                            fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700,
+                            letterSpacing: 0.5, textTransform: "uppercase", cursor: "pointer",
+                            background: riskProfile === rp ? C.gold : "transparent",
+                            color: riskProfile === rp ? C.black : "#888",
+                            transition: "all 0.15s"
+                          }}>
+                          {rp}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Web Search Toggle */}
+                  <div style={{flex:"1 1 200px", display:"flex", alignItems:"flex-end", paddingBottom: 6}}>
+                    <label style={{display:"flex", alignItems:"center", gap:10, cursor:"pointer", userSelect:"none"}}>
+                      <input type="checkbox" checked={enableWebSearch} onChange={e => setEnableWebSearch(e.target.checked)} disabled={phase==="loading"}
+                        style={{
+                          width: 16, height: 16, cursor: "pointer", accentColor: C.gold,
+                          border: `2px solid ${C.gold}`, background: "#1a1a1a"
+                        }} />
+                      <div style={{display:"flex", flexDirection:"column"}}>
+                        <span style={{fontFamily:"'Space Mono',monospace", fontSize:10, fontWeight:700, color:C.white, letterSpacing:1}}>
+                          🌐 REAL-TIME WEB SEARCH
+                        </span>
+                        <span style={{fontFamily:"'Space Mono',monospace", fontSize:8, color:"#777"}}>
+                          Search latest news & sentiment feeds
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
                 {/* Suggestions badges */}
                 {suggestions.length > 0 && (
                   <div style={{marginTop: 16}}>
@@ -1476,174 +1894,363 @@ Return EXACTLY this JSON (no extra keys, no markdown):
 
             {/* LOADING */}
             {phase==="loading" && (
-              <div style={{background:C.black,border,padding:"32px 24px",textAlign:"center",marginBottom:20}}>
-                <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:42,color:C.gold,letterSpacing:4,animation:"pulse 1.2s ease-in-out infinite"}}>
-                  {stock.toUpperCase()}
+              <div className="loading-container">
+                {/* Left side: countdown timer and checklist highlights */}
+                <div className="loading-info">
+                  <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:38,color:C.gold,letterSpacing:3,animation:"pulse 1.2s ease-in-out infinite", lineHeight: 1.1, marginBottom: 8}}>
+                    ANALYSING {stock.toUpperCase()}
+                  </div>
+                  
+                  {/* Countdown display & progress bar */}
+                  <div style={{marginTop: 8, marginBottom: 12}}>
+                    <div style={{fontFamily: "'Space Mono',monospace", fontSize: 10, color: C.white, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", display: "flex", justifyContent: "space-between"}}>
+                      <span>Estimated Time Remaining</span>
+                      <span style={{color: C.gold}}>{loadingTimer}s</span>
+                    </div>
+                    {/* Brutalist Progress Bar */}
+                    <div style={{
+                      border: `2px solid ${C.gold}`,
+                      padding: "2px",
+                      height: "22px",
+                      background: "#111",
+                      width: "100%",
+                      marginTop: 8,
+                      position: "relative",
+                      boxSizing: "border-box"
+                    }}>
+                      <div style={{
+                        height: "100%",
+                        background: C.gold,
+                        width: `${Math.min(100, Math.max(0, ((20 - loadingTimer) / 20) * 100))}%`,
+                        transition: "width 1s linear",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}>
+                        <span style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: C.black, position: "absolute", width: "100%", textAlign: "center", left: 0}}>
+                          {Math.round(Math.min(100, Math.max(0, ((20 - loadingTimer) / 20) * 100)))}% EVALUATED
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"#666",marginBottom:10,letterSpacing:1.5,textTransform:"uppercase"}}>
+                    {marketFocus === "indian" ? "INDIAN 10-POINT CHECKLIST SYSTEM" : "GLOBAL MACRO / ETF CHECKLIST SYSTEM"}
+                  </div>
+                  <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
+                    {STEPS.map((s,i)=><LoadingStep key={i} label={s} active={loadStep===i}/>)}
+                  </div>
                 </div>
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"#555",marginTop:8,letterSpacing:2}}>
-                  {marketFocus === "indian" ? "SCANNING INDIAN MARKET SCENARIOS..." : "SCANNING GLOBAL SCENARIOS..."}
-                </div>
-                <div style={{display:"flex",justifyContent:"center",gap:8,marginTop:18,flexWrap:"wrap"}}>
-                  {STEPS.map((s,i)=><LoadingStep key={i} label={s} active={loadStep===i}/>)}
+
+                {/* Right side: terminal console scroller */}
+                <div className="loading-console">
+                  <div style={{borderBottom: "1px dashed #333", paddingBottom: 6, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                    <span style={{fontWeight: 700, letterSpacing: 1}}>🌐 LIVE WEB RETRIEVAL CONSOLE</span>
+                    <span style={{color: "#888", fontSize: 8}}>STREAM_STATUS: RUNNING</span>
+                  </div>
+                  <div id="console-logs-container" style={{overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 3}}>
+                    {loadingLogs.map((log, i) => (
+                      <div key={i} style={{lineHeight: 1.3, wordBreak: "break-all", whiteSpace: "pre-wrap"}}>
+                        {log}
+                      </div>
+                    ))}
+                    {/* Pulsing prompt indicator if logs are still coming */}
+                    <div style={{animation: "pulse 0.8s infinite", color: C.gold}}>_</div>
+                  </div>
                 </div>
               </div>
             )}
 
             {/* RESULTS */}
             {phase==="results" && result && (
-              <div>
-                {/* Result header */}
-                <div style={{background:C.black,border,boxShadow:shadow,padding:"18px 22px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
-                  <div>
-                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
-                      <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:36,color:C.gold,letterSpacing:3,lineHeight:1}}>
-                        {result.symbol || result.ticker || stock.toUpperCase()}
+              <div className="results-container">
+                {/* Main Results Column */}
+                <div className="results-main">
+                  {/* Result header */}
+                  <div style={{background:C.black,border,boxShadow:shadow,padding:"18px 22px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                        <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:36,color:C.gold,letterSpacing:3,lineHeight:1}}>
+                          {result.symbol || result.ticker || stock.toUpperCase()}
+                        </div>
+                        <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,padding:"4px 10px",border:`1.5px solid ${exCol(result.exchange || exchange)}`,color:exCol(result.exchange || exchange),letterSpacing:1}}>
+                          {result.exchange || (marketFocus === "indian" ? "NSE" : exchange)}
+                        </div>
+                        {result.assetType && result.assetType !== "stock" && (
+                          <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,padding:"4px 10px",border:"1.5px solid #555",color:"#888",letterSpacing:1}}>
+                            {result.assetType.toUpperCase()}
+                          </div>
+                        )}
                       </div>
-                      <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,padding:"4px 10px",border:`1.5px solid ${exCol(result.exchange || exchange)}`,color:exCol(result.exchange || exchange),letterSpacing:1}}>
-                        {result.exchange || (marketFocus === "indian" ? "NSE" : exchange)}
+                      <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#666",marginTop:4,letterSpacing:1}}>
+                        {result.stockName || result.assetName} · {result.sector} · {result.marketCap}
+                        {result.currentPriceNote && <span> · {result.currentPriceNote}</span>}
                       </div>
-                      {result.assetType && result.assetType !== "stock" && (
-                        <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,padding:"4px 10px",border:"1.5px solid #555",color:"#888",letterSpacing:1}}>
-                          {result.assetType.toUpperCase()}
-                        </div>
-                      )}
                     </div>
-                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#666",marginTop:4,letterSpacing:1}}>
-                      {result.stockName || result.assetName} · {result.sector} · {result.marketCap}
-                      {result.currentPriceNote && <span> · {result.currentPriceNote}</span>}
+                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,fontWeight:700,padding:"6px 14px",border:`2px solid ${C.gold}`,color:C.gold,letterSpacing:2,textTransform:"uppercase",alignSelf:"center"}}>
+                      {mode==="both"?"LT + ST ANALYSIS":mode==="lt"?"LONG TERM ONLY":"SHORT TERM ONLY"}
                     </div>
                   </div>
-                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,fontWeight:700,padding:"6px 14px",border:`2px solid ${C.gold}`,color:C.gold,letterSpacing:2,textTransform:"uppercase",alignSelf:"center"}}>
-                    {mode==="both"?"LT + ST ANALYSIS":mode==="lt"?"LONG TERM ONLY":"SHORT TERM ONLY"}
+
+                  {/* Score cards */}
+                  <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+                    <ScoreCard label="Long Term Score"  score={result.ltScore} verdict={result.ltVerdict} sub={result.ltSub} colorKey="lt" visible={mode!=="st"} />
+                    <ScoreCard label="Short Term Score" score={result.stScore} verdict={result.stVerdict} sub={result.stSub} colorKey="st" visible={mode!=="lt"} />
                   </div>
-                </div>
 
-                {/* Score cards */}
-                <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
-                  <ScoreCard label="Long Term Score"  score={result.ltScore} verdict={result.ltVerdict} sub={result.ltSub} colorKey="lt" visible={mode!=="st"} />
-                  <ScoreCard label="Short Term Score" score={result.stScore} verdict={result.stVerdict} sub={result.stSub} colorKey="st" visible={mode!=="lt"} />
-                </div>
-
-                {/* Global Context Block (Global Focus only) */}
-                {marketFocus === "global" && result.globalContext && (
-                  <div style={{border:`2px solid ${C.purple}`,boxShadow:`4px 4px 0 ${C.purple}`,padding:"14px 18px",marginBottom:14,background:C.white}}>
-                    <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,color:C.purple,letterSpacing:1,marginBottom:10}}>🌐 GLOBAL CONTEXT INFORMATION</div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
-                      {result.globalContext.peersComparison && (
-                        <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
-                          <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>vs Peers</div>
-                          <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.peersComparison}</div>
-                        </div>
-                      )}
-                      {result.globalContext.indexBenchmark && (
-                        <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
-                          <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>vs Benchmark</div>
-                          <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.indexBenchmark}</div>
-                        </div>
-                      )}
-                      {result.globalContext.analystConsensus && (
-                        <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
-                          <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Analyst consensus</div>
-                          <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.analystConsensus}</div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Risk Capital */}
-                {result.riskCapital && (
-                  <div style={{border:`3px solid ${C.blue}`,boxShadow:`5px 5px 0 ${C.blue}`,padding:20,marginBottom:14,background:C.white}}>
-                    <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:22,color:C.blue,letterSpacing:1,marginBottom:14}}>💰 RISK CAPITAL GUIDANCE</div>
-                    <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-                      <RiskBox label="Conservative" amount={fmt(result.riskCapital.conservative?.pct, parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.conservative?.pct} rationale={result.riskCapital.conservative?.rationale} borderCol={C.green} />
-                      <RiskBox label="Moderate"     amount={fmt(result.riskCapital.moderate?.pct,     parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.moderate?.pct}     rationale={result.riskCapital.moderate?.rationale}     borderCol={C.gold}  />
-                      <RiskBox label="Aggressive"   amount={fmt(result.riskCapital.aggressive?.pct,   parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.aggressive?.pct}   rationale={result.riskCapital.aggressive?.rationale}   borderCol={C.red}   />
-                    </div>
-                    <div style={{marginTop:12,fontFamily:"'Space Mono',monospace",fontSize:10,color:"#888",lineHeight:1.7}}>
-                      {[result.riskCapital.stopLoss && `Stop-Loss: ${result.riskCapital.stopLoss}`,
-                        result.riskCapital.stTarget  && `ST Target: ${result.riskCapital.stTarget}`,
-                        result.riskCapital.ltHorizon && `LT Horizon: ${result.riskCapital.ltHorizon}`,
-                        result.riskCapital.keyRisk && `Key Risk: ${result.riskCapital.keyRisk}`
-                      ].filter(Boolean).join("  ·  ")}
-                    </div>
-                  </div>
-                )}
-
-                {/* Breakdown */}
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.mid,borderLeft:`4px solid ${C.gold}`,paddingLeft:10,marginBottom:16,marginTop:20}}>
-                  10-Point {marketFocus === "indian" ? "Indian" : "Global"} Criteria Breakdown — tap to expand
-                </div>
-                {(result.criteria||[]).map((c,i)=><CriterionCard key={i} c={c} mode={mode}/>)}
-
-                {/* Final recommendation */}
-                <div style={{background:C.black,border,boxShadow:shadowG,padding:22,marginBottom:16}}>
-                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.gold,marginBottom:12}}>▶ AI FINAL RECOMMENDATION</div>
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#ccc",lineHeight:1.85}}>{result.finalRecommendation}</div>
-                  {result.keyRisks?.length>0 && (
-                    <div style={{marginTop:14,fontFamily:"'Space Mono',monospace",fontSize:11,color:C.red,lineHeight:1.7}}>
-                      <strong>KEY RISKS:</strong> {result.keyRisks.join(" · ")}
+                  {/* Global Context Block (Global Focus only) */}
+                  {marketFocus === "global" && result.globalContext && (
+                    <div style={{border:`2px solid ${C.purple}`,boxShadow:`4px 4px 0 ${C.purple}`,padding:"14px 18px",marginBottom:14,background:C.white}}>
+                      <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:18,color:C.purple,letterSpacing:1,marginBottom:10}}>🌐 GLOBAL CONTEXT INFORMATION</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
+                        {result.globalContext.peersComparison && (
+                          <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
+                            <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>vs Peers</div>
+                            <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.peersComparison}</div>
+                          </div>
+                        )}
+                        {result.globalContext.indexBenchmark && (
+                          <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
+                            <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>vs Benchmark</div>
+                            <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.indexBenchmark}</div>
+                          </div>
+                        )}
+                        {result.globalContext.analystConsensus && (
+                          <div style={{borderLeft:`3px solid ${C.purple}`,paddingLeft:10}}>
+                            <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:C.purple,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>Analyst consensus</div>
+                            <div style={{fontSize:12,color:"#333",lineHeight:1.5}}>{result.globalContext.analystConsensus}</div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
-                  {result.catalysts?.length>0 && (
-                    <div style={{marginTop:8,fontFamily:"'Space Mono',monospace",fontSize:11,color:C.green,lineHeight:1.7}}>
-                      <strong>CATALYSTS:</strong> {result.catalysts.join(" · ")}
+
+                  {/* Risk Capital */}
+                  {result.riskCapital && (
+                    <div style={{border:`3px solid ${C.blue}`,boxShadow:`5px 5px 0 ${C.blue}`,padding:20,marginBottom:14,background:C.white}}>
+                      <div style={{fontFamily:"'Bebas Neue',cursive",fontSize:22,color:C.blue,letterSpacing:1,marginBottom:14}}>💰 RISK CAPITAL GUIDANCE</div>
+                      <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                        <RiskBox label="Conservative" amount={fmt(result.riskCapital.conservative?.pct, parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.conservative?.pct} rationale={result.riskCapital.conservative?.rationale} borderCol={C.green} />
+                        <RiskBox label="Moderate"     amount={fmt(result.riskCapital.moderate?.pct,     parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.moderate?.pct}     rationale={result.riskCapital.moderate?.rationale}     borderCol={C.gold}  />
+                        <RiskBox label="Aggressive"   amount={fmt(result.riskCapital.aggressive?.pct,   parseFloat(portfolio)||null, marketFocus === "indian" ? "INR" : currency)} pct={result.riskCapital.aggressive?.pct}   rationale={result.riskCapital.aggressive?.rationale}   borderCol={C.red}   />
+                      </div>
+                      <div style={{marginTop:12,fontFamily:"'Space Mono',monospace",fontSize:10,color:"#888",lineHeight:1.7}}>
+                        {[result.riskCapital.stopLoss && `Stop-Loss: ${result.riskCapital.stopLoss}`,
+                          result.riskCapital.stTarget  && `ST Target: ${result.riskCapital.stTarget}`,
+                          result.riskCapital.ltHorizon && `LT Horizon: ${result.riskCapital.ltHorizon}`,
+                          result.riskCapital.keyRisk && `Key Risk: ${result.riskCapital.keyRisk}`
+                        ].filter(Boolean).join("  ·  ")}
+                      </div>
                     </div>
                   )}
+
+                  {/* Breakdown */}
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.mid,borderLeft:`4px solid ${C.gold}`,paddingLeft:10,marginBottom:16,marginTop:20}}>
+                    10-Point {marketFocus === "indian" ? "Indian" : "Global"} Criteria Breakdown — tap to expand
+                  </div>
+                  {(result.criteria||[]).map((c,i)=><CriterionCard key={i} c={c} mode={mode}/>)}
+
+                  {/* Final recommendation */}
+                  <div style={{background:C.black,border,boxShadow:shadowG,padding:22,marginBottom:16}}>
+                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.gold,marginBottom:12}}>▶ AI FINAL RECOMMENDATION</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#ccc",lineHeight:1.85}}>{result.finalRecommendation}</div>
+                    {result.keyRisks?.length>0 && (
+                      <div style={{marginTop:14,fontFamily:"'Space Mono',monospace",fontSize:11,color:C.red,lineHeight:1.7}}>
+                        <strong>KEY RISKS:</strong> {result.keyRisks.join(" · ")}
+                      </div>
+                    )}
+                    {result.catalysts?.length>0 && (
+                      <div style={{marginTop:8,fontFamily:"'Space Mono',monospace",fontSize:11,color:C.green,lineHeight:1.7}}>
+                        <strong>CATALYSTS:</strong> {result.catalysts.join(" · ")}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Download and reset actions */}
+                  <div style={{display: "flex", gap: 12, marginTop: 14, flexWrap: "wrap"}}>
+                    <button onClick={() => {
+                      const activeEntry = {
+                        assetName: result.stockName || result.assetName || stock.toUpperCase(),
+                        ticker: result.symbol || result.ticker || stock.toUpperCase(),
+                        exchange: marketFocus === "indian" ? "NSE" : exchange,
+                        assetType: marketFocus === "indian" ? "stock" : assetType,
+                        mode,
+                        ltScore: result.ltScore,
+                        stScore: result.stScore,
+                        ltVerdict: result.ltVerdict,
+                        stVerdict: result.stVerdict,
+                        date: new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}),
+                        result: result,
+                        portfolio: portfolio ? parseFloat(portfolio) : null,
+                        currency: marketFocus === "indian" ? "INR" : currency,
+                        riskProfile,
+                        webSources: webSources
+                      };
+                      handleDownloadPDF(activeEntry);
+                    }}
+                    disabled={isPrinting}
+                    style={{
+                      flex: 1,
+                      minWidth: "200px",
+                      fontFamily: "'Space Mono',monospace",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: 1.5,
+                      textTransform: "uppercase",
+                      padding: "12px 20px",
+                      border,
+                      background: C.gold,
+                      color: C.black,
+                      cursor: isPrinting ? "not-allowed" : "pointer",
+                      boxShadow: "3px 3px 0 #0A0A0A",
+                      transition: "all 0.15s"
+                    }}>
+                      {isPrinting ? "⏳ GENERATING PDF..." : "📥 DOWNLOAD PDF REPORT"}
+                    </button>
+
+                    <button onClick={resetAnalysis} style={{flex: 1, minWidth: "200px", fontFamily: "'Space Mono',monospace", fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", padding: "12px 20px", border: "2px solid #555", background: "transparent", color: "#888", cursor: "pointer"}}>
+                      ↺ ANALYSE ANOTHER STOCK
+                    </button>
+                  </div>
                 </div>
 
-                {/* Disclaimer */}
-                <div style={{border:"2px solid #ccc",padding:"10px 14px",marginTop:4,fontFamily:"'Space Mono',monospace",fontSize:9,color:"#888",lineHeight:1.7}}>
-                  ⚠ DISCLAIMER: AI-generated analysis for educational purposes only. Not financial or investment advice. Always verify with actual records before committing capital.
-                </div>
+                {/* Right Column: Quotes, News Sources, Transparency & Disclaimer */}
+                <div className="results-sidebar">
+                  {/* Real-time LTP Quote Card */}
+                  {(result.ltp || result.fiftyTwoWeekHigh || result.fiftyTwoWeekLow) && (
+                    <div style={{
+                      border: `2px solid ${C.black}`,
+                      boxShadow: "3px 3px 0 #000",
+                      background: C.white,
+                      padding: "16px"
+                    }}>
+                      <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: "#777", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8}}>
+                        ⚡ REAL-TIME MARKET PRICE
+                      </div>
+                      <div style={{display: "flex", alignItems: "baseline", gap: 6, marginBottom: 12}}>
+                        <span style={{fontFamily: "'Space Mono',monospace", fontSize: 10, color: C.mid, textTransform: "uppercase"}}>LTP:</span>
+                        <span style={{fontFamily: "'Bebas Neue',cursive", fontSize: 32, color: C.black, letterSpacing: 0.5}}>
+                          {getCurrencySymbol(result.currency || (marketFocus === "indian" ? "INR" : currency))}{result.ltp}
+                        </span>
+                      </div>
+                      <div style={{display: "flex", flexDirection: "column", gap: 6, borderTop: "1px dashed #ccc", paddingTop: 10}}>
+                        {result.fiftyTwoWeekLow && (
+                          <div style={{display: "flex", justifyContent: "space-between", fontSize: 11}}>
+                            <span style={{fontFamily: "'Space Mono',monospace", color: "#888"}}>52W Low:</span>
+                            <span style={{fontFamily: "'Space Mono',monospace", fontWeight: 700, color: C.red}}>
+                              {getCurrencySymbol(result.currency || (marketFocus === "indian" ? "INR" : currency))}{result.fiftyTwoWeekLow}
+                            </span>
+                          </div>
+                        )}
+                        {result.fiftyTwoWeekHigh && (
+                          <div style={{display: "flex", justifyContent: "space-between", fontSize: 11}}>
+                            <span style={{fontFamily: "'Space Mono',monospace", color: "#888"}}>52W High:</span>
+                            <span style={{fontFamily: "'Space Mono',monospace", fontWeight: 700, color: C.green}}>
+                              {getCurrencySymbol(result.currency || (marketFocus === "indian" ? "INR" : currency))}{result.fiftyTwoWeekHigh}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-                <div style={{display: "flex", gap: 12, marginTop: 14, flexWrap: "wrap"}}>
-                  <button onClick={() => {
-                    const activeEntry = {
-                      assetName: result.stockName || result.assetName || stock.toUpperCase(),
-                      ticker: result.symbol || result.ticker || stock.toUpperCase(),
-                      exchange: marketFocus === "indian" ? "NSE" : exchange,
-                      assetType: marketFocus === "indian" ? "stock" : assetType,
-                      mode,
-                      ltScore: result.ltScore,
-                      stScore: result.stScore,
-                      ltVerdict: result.ltVerdict,
-                      stVerdict: result.stVerdict,
-                      date: new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"2-digit"}),
-                      result: result,
-                      portfolio: portfolio ? parseFloat(portfolio) : null,
-                      currency: marketFocus === "indian" ? "INR" : currency,
-                      riskProfile
-                    };
-                    handleDownloadPDF(activeEntry);
-                  }}
-                  disabled={isPrinting}
-                  style={{
-                    flex: 1,
-                    minWidth: "200px",
-                    fontFamily: "'Space Mono',monospace",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    letterSpacing: 1.5,
-                    textTransform: "uppercase",
-                    padding: "12px 20px",
-                    border,
-                    background: C.gold,
-                    color: C.black,
-                    cursor: isPrinting ? "not-allowed" : "pointer",
-                    boxShadow: "3px 3px 0 #0A0A0A",
-                    transition: "all 0.15s"
+                  {/* Cited Web Sources Card */}
+                  <div style={{
+                    border: `2px solid ${C.black}`,
+                    boxShadow: "3px 3px 0 #000",
+                    background: C.white,
+                    padding: "16px"
                   }}>
-                    {isPrinting ? "⏳ GENERATING PDF..." : "📥 DOWNLOAD PDF REPORT"}
-                  </button>
+                    <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: C.black, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10, borderBottom: `2px solid ${C.black}`, paddingBottom: 6}}>
+                      🌐 CITED WEB SOURCES ({webSources.length})
+                    </div>
+                    {enableWebSearch && webSources.length > 0 ? (
+                      <div style={{maxHeight: "220px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 10}}>
+                        {webSources.map((source, index) => (
+                          <a key={index} href={source.link} target="_blank" rel="noopener noreferrer"
+                            style={{
+                              textDecoration: "none", color: C.black, display: "block",
+                              borderBottom: index < webSources.length - 1 ? "1px dotted #eee" : "none",
+                              paddingBottom: 8, transition: "color 0.15s"
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.color = C.blue}
+                            onMouseLeave={e => e.currentTarget.style.color = C.black}>
+                            <div style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.blue, fontWeight: 700, marginBottom: 2}}>
+                              {source.publisher.toUpperCase()}
+                            </div>
+                            <div style={{fontSize: 10, fontWeight: 600, lineHeight: 1.3, marginBottom: 4}}>
+                              {source.title}
+                            </div>
+                            <div style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: "#888"}}>
+                              {new Date(source.providerPublishTime * 1000).toLocaleDateString()}
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, color: "#999", lineHeight: 1.5}}>
+                        {enableWebSearch ? "No news feeds retrieved for this symbol." : "Real-time web search was disabled."}
+                      </div>
+                    )}
+                  </div>
 
-                  <button onClick={resetAnalysis} style={{flex: 1, minWidth: "200px", fontFamily: "'Space Mono',monospace", fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", padding: "12px 20px", border: "2px solid #555", background: "transparent", color: "#888", cursor: "pointer"}}>
-                    ↺ ANALYSE ANOTHER STOCK
-                  </button>
+                  {/* Data Sources & Methodology Transparency Box */}
+                  <div style={{
+                    border: `2px solid ${C.black}`,
+                    boxShadow: "3px 3px 0px #0A0A0A",
+                    background: "#e8f4fd",
+                    padding: "14px 16px"
+                  }}>
+                    <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: C.blue, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6}}>
+                      🔍 DATA SOURCES & METHODOLOGY
+                    </div>
+                    <div style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.black, lineHeight: 1.5}}>
+                      <ul style={{margin: 0, paddingLeft: 12}}>
+                        <li style={{marginBottom: 4}}><strong>Real-time Market Data:</strong> LTP, 52W High, and 52W Low fetched from public <span style={{color: C.blue, fontWeight: 700}}>Yahoo Finance API</span> feeds.</li>
+                        <li style={{marginBottom: 4}}><strong>AI Analysis Engine:</strong> Scoring and texts evaluated by provider (<span style={{color: C.gold, fontWeight: 700}}>{provider === "demo" ? "Local Simulator" : provider.toUpperCase()}</span>) accurate up to mid-2026.</li>
+                        <li style={{marginBottom: 0}}><strong>Scoring Logic:</strong> Evaluated using the selected 10-Point Framework ({marketFocus === "indian" ? "promoter/PLI weighted Indian criteria" : "global macroeconomic/ETF criteria"}).</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Disclaimer Card */}
+                  <div style={{border:"2px solid #ccc",padding:"10px 14px",fontFamily:"'Space Mono',monospace",fontSize:9,color:"#888",lineHeight:1.6}}>
+                    ⚠ DISCLAIMER: AI-generated analysis for educational purposes only. Not financial or investment advice. Always verify with actual records before committing capital.
+                  </div>
                 </div>
               </div>
             )}
           </div>
+        )}
+
+        {/* ═══ TOP PICKS TAB ═══ */}
+        {activeTab === "predictions" && (
+          <TopPicksView 
+            marketFocus={marketFocus}
+            setStock={setStock}
+            setActiveTab={setActiveTab}
+            runAnalysis={runAnalysis}
+            setExchange={setExchange}
+            setAssetType={setAssetType}
+            setCurrency={setCurrency}
+            provider={provider}
+            geminiKey={geminiKey}
+            anthropicKey={anthropicKey}
+            openaiKey={openaiKey}
+            openrouterKey={openrouterKey}
+            kimiKey={kimiKey}
+            glmKey={glmKey}
+            localKey={localKey}
+            geminiModel={geminiModel}
+            anthropicModel={anthropicModel}
+            openaiModel={openaiModel}
+            openrouterModel={openrouterModel}
+            kimiModel={kimiModel}
+            glmModel={glmModel}
+            localModel={localModel}
+            localEndpoint={localEndpoint}
+            repairJSON={repairJSON}
+          />
         )}
 
         {/* ═══ HISTORY TAB ═══ */}
@@ -1653,7 +2260,7 @@ Return EXACTLY this JSON (no extra keys, no markdown):
             {history.length===0 ? (
               <div style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"#888",textAlign:"center",padding:32,border:"2px dashed #ccc",letterSpacing:1}}>No assets analysed yet.<br/>Run your first analysis to see history here.</div>
             ) : history.map((h,i)=>(
-              <div key={i} onClick={()=>{setResult(h.result);setMode(h.mode);setPortfolio(h.portfolio?String(h.portfolio):"");setPhase("results");setActiveTab("analyse"); if(h.exchange === "NSE" || h.exchange === "BSE") { setMarketFocus("indian"); } else { setMarketFocus("global"); setExchange(h.exchange); setAssetType(h.assetType); setCurrency(h.currency); }}}
+              <div key={i} onClick={()=>{setResult(h.result);setMode(h.mode);setPortfolio(h.portfolio?String(h.portfolio):"");setWebSources(h.webSources || []);setPhase("results");setActiveTab("analyse"); if(h.exchange === "NSE" || h.exchange === "BSE") { setMarketFocus("indian"); } else { setMarketFocus("global"); setExchange(h.exchange); setAssetType(h.assetType); setCurrency(h.currency); }}}
                 style={{border:`2px solid ${C.black}`,padding:"13px 15px",marginBottom:10,display:"grid",gridTemplateColumns:"auto 1fr auto auto auto auto",alignItems:"center",gap:12,cursor:"pointer",background:C.white,transition:"all 0.12s"}}
                 onMouseEnter={e=>e.currentTarget.style.background="#f0ead9"}
                 onMouseLeave={e=>e.currentTarget.style.background=C.white}>
@@ -1830,6 +2437,44 @@ Return EXACTLY this JSON (no extra keys, no markdown):
             )}
           </div>
 
+          {/* LTP and 52W High/Low for PDF */}
+          {(printData.result?.ltp || printData.result?.fiftyTwoWeekHigh || printData.result?.fiftyTwoWeekLow) && (
+            <div style={{
+              border: `3px solid ${C.black}`,
+              background: C.white,
+              padding: "12px 16px",
+              marginBottom: 20,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <div style={{display: "flex", alignItems: "baseline", gap: 6}}>
+                <span style={{fontFamily: "'Space Mono',monospace", fontSize: 9, color: C.mid, textTransform: "uppercase"}}>LTP:</span>
+                <span style={{fontFamily: "'Bebas Neue',cursive", fontSize: 24, color: C.black}}>
+                  {getCurrencySymbol(printData.result.currency || (printData.exchange === "NSE" || printData.exchange === "BSE" ? "INR" : printData.currency))}{printData.result.ltp}
+                </span>
+              </div>
+              <div style={{display: "flex", gap: 16}}>
+                {printData.result.fiftyTwoWeekLow && (
+                  <div style={{display: "flex", alignItems: "baseline", gap: 4}}>
+                    <span style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.red, textTransform: "uppercase"}}>52W Low:</span>
+                    <span style={{fontFamily: "'Space Mono',monospace", fontSize: 11, fontWeight: 700, color: C.red}}>
+                      {getCurrencySymbol(printData.result.currency || (printData.exchange === "NSE" || printData.exchange === "BSE" ? "INR" : printData.currency))}{printData.result.fiftyTwoWeekLow}
+                    </span>
+                  </div>
+                )}
+                {printData.result.fiftyTwoWeekHigh && (
+                  <div style={{display: "flex", alignItems: "baseline", gap: 4}}>
+                    <span style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.green, textTransform: "uppercase"}}>52W High:</span>
+                    <span style={{fontFamily: "'Space Mono',monospace", fontSize: 11, fontWeight: 700, color: C.green}}>
+                      {getCurrencySymbol(printData.result.currency || (printData.exchange === "NSE" || printData.exchange === "BSE" ? "INR" : printData.currency))}{printData.result.fiftyTwoWeekHigh}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Global Context Block (Global Focus only) */}
           {printData.exchange !== "NSE" && printData.exchange !== "BSE" && printData.result?.globalContext && (
             <div style={{border: `2px solid ${C.purple}`, padding: "14px 18px", marginBottom: "20px", background: C.white}}>
@@ -1920,6 +2565,49 @@ Return EXACTLY this JSON (no extra keys, no markdown):
             );
           })}
 
+          {/* Cited Web Sources in PDF */}
+          {printData.webSources && printData.webSources.length > 0 && (
+            <div style={{
+              border: `2.5px solid ${C.black}`,
+              padding: "16px",
+              marginTop: 20,
+              boxSizing: "border-box",
+              background: "#fafafa"
+            }}>
+              <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: C.black, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8, borderBottom: `2.5px solid ${C.black}`, paddingBottom: 4}}>
+                🌐 CITED WEB SOURCES & RECENT NEWS
+              </div>
+              <div style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.black, lineHeight: 1.5}}>
+                {printData.webSources.slice(0, 4).map((n, idx) => (
+                  <div key={idx} style={{marginBottom: 6, borderBottom: idx < Math.min(4, printData.webSources.length) - 1 ? "1px dashed #ddd" : "none", paddingBottom: idx < Math.min(4, printData.webSources.length) - 1 ? 4 : 0}}>
+                    <strong>[{idx + 1}] {n.title}</strong><br />
+                    <span style={{color: "#555"}}>Publisher: {n.publisher} · Link: {n.link}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Data Sources & Methodology Transparency for PDF */}
+          <div style={{
+            border: `2.5px solid ${C.black}`,
+            background: "#e8f4fd",
+            padding: "14px 16px",
+            marginTop: 20,
+            boxSizing: "border-box"
+          }}>
+            <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, color: C.blue, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 6}}>
+              🔍 DATA SOURCES & METHODOLOGY TRANSPARENCY
+            </div>
+            <div style={{fontFamily: "'Space Mono',monospace", fontSize: 8, color: C.black, lineHeight: 1.6}}>
+              <ul style={{margin: 0, paddingLeft: 16}}>
+                <li style={{marginBottom: 4}}><strong>Real-time Market Data:</strong> LTP, 52-Week High, and 52-Week Low are fetched directly via Vite reverse-proxy from public <span style={{color: C.blue, fontWeight: 700}}>Yahoo Finance API</span> feeds.</li>
+                <li style={{marginBottom: 4}}><strong>AI Analysis Engine:</strong> Text explanations and scoring grades are evaluated by the configured AI provider (<span style={{color: C.gold, fontWeight: 700}}>{provider === "demo" ? "Local Simulator" : provider.toUpperCase()}</span>) utilizing pre-trained weights accurate up to mid-2026.</li>
+                <li style={{marginBottom: 0}}><strong>Scoring Logic:</strong> Evaluated using the selected 10-Point Framework ({printData.exchange === "NSE" || printData.exchange === "BSE" ? "promoter/PLI weighted Indian criteria" : "global macroeconomic/ETF criteria"}).</li>
+              </ul>
+            </div>
+          </div>
+
           {/* Final recommendation */}
           <div style={{background: C.black, border: `3px solid ${C.black}`, padding: "20px", color: C.white, marginTop: 20}}>
             <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, letterSpacing: 3, textTransform: "uppercase", color: C.gold, marginBottom: 8}}>
@@ -1946,6 +2634,388 @@ Return EXACTLY this JSON (no extra keys, no markdown):
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── TOP PICKS COMPONENT ──────────────────────────────────────
+function TopPicksView({
+  marketFocus,
+  setStock,
+  setActiveTab,
+  runAnalysis,
+  setExchange,
+  setAssetType,
+  setCurrency,
+  provider,
+  geminiKey, anthropicKey, openaiKey, openrouterKey, kimiKey, glmKey, localKey,
+  geminiModel, anthropicModel, openaiModel, openrouterModel, kimiModel, glmModel, localModel,
+  localEndpoint,
+  repairJSON
+}) {
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
+  const [aiPicks, setAiPicks] = useState(() => {
+    try {
+      const cached = localStorage.getItem(`stock_scanner_top_picks_${marketFocus}`);
+      return cached ? JSON.parse(cached) : null;
+    } catch (_) {
+      return null;
+    }
+  });
+
+  const presetsIndia = {
+    lt: [
+      { symbol: "TCS", name: "Tata Consultancy Services Ltd.", sector: "IT Services", score: 8.9, rationale: "Unmatched business quality, debt-free balance sheet, sustained ROCE >40%, and robust Tata governance." },
+      { symbol: "RELIANCE", name: "Reliance Industries Ltd.", sector: "Energy & Telecom", score: 8.7, rationale: "Dominant retail/telecom moat, strong cash flows, and massive green energy transition runway." },
+      { symbol: "HDFCBANK", name: "HDFC Bank Ltd.", sector: "Financial Services", score: 8.5, rationale: "Industry-leading credit portfolio, low NPA ratios, clean promoter history, and structural credit growth." },
+      { symbol: "LT", name: "Larsen & Toubro Ltd.", sector: "Industrials & Infrastructure", score: 8.4, rationale: "Massive infra order book, government capex tailwinds, and strong execution capabilities." },
+      { symbol: "TATAMOTORS", name: "Tata Motors Ltd.", sector: "Consumer Cyclical", score: 8.2, rationale: "Market leader in domestic EV space, JLR turnaround, and institutional smart money buying." }
+    ],
+    st: [
+      { symbol: "IREDA", name: "Indian Renewable Energy Dev. Agency", sector: "Renewable Energy", score: 9.2, rationale: "Sovereign PSU funding backing clean energy targets, high volume momentum breakout." },
+      { symbol: "TATAELXSI", name: "Tata Elxsi Ltd.", sector: "Technology & AI", score: 8.8, rationale: "Strong daily chart volume breakouts, RSI momentum above 60, and sector-wide AI engineering tailwinds." },
+      { symbol: "HAL", name: "Hindustan Aeronautics Ltd.", sector: "Defense & Aerospace", score: 8.7, rationale: "Defense manufacturing policy support, price action above 50-DMA, and heavy smart money flow." },
+      { symbol: "BHEL", name: "Bharat Heavy Electricals Ltd.", sector: "Power & Capital Goods", score: 8.5, rationale: "High volume consolidation breakout, large order wins, and bullish MACD indicator." },
+      { symbol: "RVNL", name: "Rail Vikas Nigam Ltd.", sector: "Rail Infrastructure", score: 8.3, rationale: "Bullish rail capex macro setup, volume spikes on support zones, and short term institutional flows." }
+    ]
+  };
+
+  const presetsGlobal = {
+    lt: [
+      { symbol: "MSFT", name: "Microsoft Corp.", sector: "Technology & SaaS", score: 9.1, rationale: "Dominant enterprise SaaS moat, pioneering generative AI integrations, and elite capital allocation returns." },
+      { symbol: "AAPL", name: "Apple Inc.", sector: "Consumer Electronics", score: 8.9, rationale: "Stickiest consumer hardware ecosystem lock-in, high services gross margin, and massive share buybacks." },
+      { symbol: "NVDA", name: "NVIDIA Corp.", sector: "Semiconductors & AI", score: 8.8, rationale: "Virtually monopolistic AI GPU hardware and CUDA software moat, exceptional operating margin trend." },
+      { symbol: "GOOGL", name: "Alphabet Inc.", sector: "Communication Services", score: 8.6, rationale: "Global search engine ad dominance, YouTube network effect, and highly attractive relative PEG." },
+      { symbol: "AMZN", name: "Amazon.com Inc.", sector: "Consumer Discretionary", score: 8.4, rationale: "Dominant AWS cloud segment, high margin ad business, and unmatched global delivery network." }
+    ],
+    st: [
+      { symbol: "NVDA", name: "NVIDIA Corp.", sector: "Semiconductors & AI", score: 9.3, rationale: "Blowout earnings beat momentum, price trading strongly above 20-EMA on heavy volume." },
+      { symbol: "TSLA", name: "Tesla Inc.", sector: "Automotive & Autonomy", score: 8.9, rationale: "Massive retail momentum breakout on autonomous driving catalysts and high smart money options flow." },
+      { symbol: "META", name: "Meta Platforms Inc.", sector: "Social Media & Ads", score: 8.7, rationale: "Accelerating digital ad margins, trading above short-term DMAs on institutional block accumulation." },
+      { symbol: "AVGO", name: "Broadcom Inc.", sector: "Semiconductors & Network", score: 8.6, rationale: "Strong AI networking chip tailwinds, volume breakout past all-time high resistance." },
+      { symbol: "PLTR", name: "Palantir Technologies Inc.", sector: "Software & AI", score: 8.5, rationale: "Accelerating US commercial customer additions, positive technical RSI momentum, and bullish MACD." }
+    ]
+  };
+
+  const activePicks = aiPicks || (marketFocus === "indian" ? presetsIndia : presetsGlobal);
+
+  async function handleQuickAnalyse(symbol) {
+    if (marketFocus === "global") {
+      const sym = symbol.toUpperCase();
+      if (["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN", "TSLA", "META", "AVGO", "PLTR"].includes(sym)) {
+        setExchange("NASDAQ");
+        setAssetType("stock");
+        setCurrency("USD");
+      }
+    } else {
+      setExchange("NSE");
+      setAssetType("stock");
+      setCurrency("INR");
+    }
+    setActiveTab("analyse");
+    setStock(symbol);
+    setTimeout(() => {
+      runAnalysis(symbol);
+    }, 100);
+  }
+
+  async function generateWithAI() {
+    if (provider === "demo") {
+      setError("Please select an active AI Provider (e.g. Gemini, Anthropic) and configure your API key in the AI Engine Config drawer.");
+      return;
+    }
+    setGenerating(true);
+    setError("");
+
+    const isInd = marketFocus === "indian";
+    const systemPrompt = `You are a world-class financial analyst. Suggest the top 5 stocks for Long Term (LT) investment and the top 5 stocks for Short Term (ST) investment for ${isInd ? "Indian markets (NSE/BSE)" : "Global markets (NYSE/NASDAQ/LSE/etc.)"} based on the 10-point framework.
+Return ONLY a valid JSON object matching this schema:
+{
+  "lt": [
+    { "symbol": "TICKER", "name": "Company Name", "sector": "Sector", "score": 9.2, "rationale": "High-quality moat, superior ROCE, and clean promoter record." }
+  ],
+  "st": [
+    { "symbol": "TICKER", "name": "Company Name", "sector": "Sector", "score": 9.1, "rationale": "Volume breakout past resistance, high institutional buying, and positive near-term momentum." }
+  ]
+}
+Each list (lt and st) MUST have exactly 5 entries. Rationale must be 1-2 short sentences. Do not return any other text, markdown blocks, or commentary. Use data accurate up to mid-2026.`;
+
+    const userMessage = `Recommend the top 5 LT and top 5 ST picks for ${isInd ? "Indian Stocks" : "Global Stocks"}. Format your output strictly as the requested JSON.`;
+
+    try {
+      let text = "";
+      
+      if (provider === "anthropic") {
+        if (!anthropicKey) throw new Error("Anthropic API Key is missing.");
+        const response = await fetch("/api/anthropic/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": anthropicKey },
+          body: JSON.stringify({ model: anthropicModel, max_tokens: 3000, system: systemPrompt, messages: [{ role: "user", content: userMessage }] })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = (data.content || []).map(b => b.text || "").join("");
+      } else if (provider === "gemini") {
+        if (!geminiKey) throw new Error("Gemini API Key is missing.");
+        const response = await fetch(`/api/gemini/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts: [{ text: `${systemPrompt}\n\nUser Message:\n${userMessage}` }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.2 } })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      } else if (provider === "openai") {
+        if (!openaiKey) throw new Error("OpenAI API Key is missing.");
+        const response = await fetch("/api/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openaiKey}` },
+          body: JSON.stringify({ model: openaiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }], response_format: { type: "json_object" }, temperature: 0.2 })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content || "";
+      } else if (provider === "openrouter") {
+        if (!openrouterKey) throw new Error("OpenRouter API Key is missing.");
+        const response = await fetch("/api/openrouter/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openrouterKey}`, "HTTP-Referer": "http://localhost:5173", "X-Title": "Stock Scanner" },
+          body: JSON.stringify({ model: openrouterModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }], temperature: 0.2 })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content || "";
+      } else if (provider === "kimi") {
+        if (!kimiKey) throw new Error("Kimi API Key is missing.");
+        const response = await fetch("/api/kimi/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${kimiKey}` },
+          body: JSON.stringify({ model: kimiModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }], temperature: 0.3 })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content || "";
+      } else if (provider === "glm") {
+        if (!glmKey) throw new Error("GLM API Key is missing.");
+        const response = await fetch("/api/glm/v4/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${glmKey}` },
+          body: JSON.stringify({ model: glmModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }], temperature: 0.2 })
+        });
+        if (!response.ok) { const err = await response.json().catch(()=>({})); throw new Error(err.error?.message || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content || "";
+      } else if (provider === "local") {
+        const url = `${localEndpoint.replace(/\/$/, '')}/v1/chat/completions`;
+        const localHeaders = { "Content-Type": "application/json" };
+        if (localKey) localHeaders["Authorization"] = `Bearer ${localKey}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: localHeaders,
+          body: JSON.stringify({ model: localModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }], temperature: 0.2 })
+        });
+        if (!response.ok) { const err = await response.text().catch(()=>""); throw new Error(err || `HTTP ${response.status}`); }
+        const data = await response.json();
+        text = data.choices?.[0]?.message?.content || "";
+      }
+
+      text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const parsed = repairJSON(text);
+
+      if (parsed && (parsed.lt || parsed.st)) {
+        setAiPicks(parsed);
+        localStorage.setItem(`stock_scanner_top_picks_${marketFocus}`, JSON.stringify(parsed));
+      } else {
+        throw new Error("Invalid format received from AI.");
+      }
+    } catch (e) {
+      console.error(e);
+      setError("AI generation failed: " + e.message + ". Showing pre-configured presets instead.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleResetPresets() {
+    setAiPicks(null);
+    localStorage.removeItem(`stock_scanner_top_picks_${marketFocus}`);
+    setError("");
+  }
+
+  return (
+    <div style={{animation: "slideIn 0.3s ease"}}>
+      <style>{`
+        @keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+      `}</style>
+      
+      {/* Header Info */}
+      <div style={{
+        background: C.black, 
+        border: `3px solid ${C.black}`, 
+        boxShadow: marketFocus === "indian" ? "5px 5px 0px #1DB954" : "5px 5px 0px #1A6EFF", 
+        padding: 22, 
+        marginBottom: 20
+      }}>
+        <div style={{fontFamily: "'Bebas Neue',cursive", fontSize: 24, color: C.gold, letterSpacing: 1, marginBottom: 4}}>
+          🎯 {marketFocus === "indian" ? "TOP INDIAN STOCK PREDICTIONS" : "TOP GLOBAL STOCK PREDICTIONS"}
+        </div>
+        <div style={{fontFamily: "'Space Mono',monospace", fontSize: 10, color: "#666", letterSpacing: 1, marginBottom: 16}}>
+          PREDICTED TOP 5 ASSETS FOR INVESTMENT ACCORDING TO 10-POINT FRAMEWORK
+        </div>
+        
+        <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12}}>
+          <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, color: "#aaa", lineHeight: 1.5, maxWidth: "500px"}}>
+            These predictions are evaluated basis Moat, Growth, Balance Sheet, Return Ratios, and Valuations. Click <strong>Analyse Now</strong> to run the full live AI rating engine on any stock.
+          </div>
+          <div style={{display: "flex", gap: 10}}>
+            {aiPicks && (
+              <button 
+                onClick={handleResetPresets} 
+                style={{
+                  fontFamily: "'Space Mono',monospace", fontSize: 10, fontWeight: 700, padding: "8px 14px",
+                  border: `2px solid #555`, background: "transparent", color: "#888", cursor: "pointer", transition: "all 0.15s"
+                }}
+              >
+                ↺ RESET PRESETS
+              </button>
+            )}
+            <button 
+              onClick={generateWithAI} 
+              disabled={generating}
+              style={{
+                fontFamily: "'Space Mono',monospace", fontSize: 10, fontWeight: 700, padding: "8px 14px",
+                border: `2px solid ${generating ? "#444" : C.gold}`, background: generating ? "#1a1a1a" : C.gold, 
+                color: generating ? "#444" : C.black, cursor: generating ? "not-allowed" : "pointer", 
+                boxShadow: generating ? "none" : "2px 2px 0px #0A0A0A", transition: "all 0.15s"
+              }}
+            >
+              {generating ? "⏳ GENERATING..." : "✨ GENERATE VIA AI"}
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{marginTop: 14, border: `2px solid ${C.red}`, padding: "10px 14px", fontFamily: "'Space Mono',monospace", fontSize: 10, color: C.red}}>
+            ⚠ {error}
+          </div>
+        )}
+      </div>
+
+      {/* Grid Content */}
+      <div style={{display: "flex", gap: 16, flexWrap: "wrap"}}>
+        {/* Long Term Column */}
+        <div style={{flex: "1 1 350px"}}>
+          <div style={{
+            fontFamily: "'Space Mono',monospace", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", 
+            color: C.green, borderLeft: `4px solid ${C.green}`, paddingLeft: 10, marginBottom: 14
+          }}>
+            🏆 Top 5 Long Term (LT) Picks
+          </div>
+          
+          {activePicks.lt?.map((stock, i) => (
+            <div key={stock.symbol} style={{
+              border: `2px solid ${C.black}`, 
+              boxShadow: "3px 3px 0px #0A0A0A", 
+              background: C.white, 
+              padding: 14, 
+              marginBottom: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8
+            }}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start"}}>
+                <div>
+                  <span style={{fontFamily: "'Bebas Neue',cursive", fontSize: 24, letterSpacing: 1, color: C.black}}>
+                    {i + 1}. {stock.symbol}
+                  </span>
+                  <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, color: "#888", marginTop: 2}}>
+                    {stock.name} · {stock.sector}
+                  </div>
+                </div>
+                <div style={{
+                  background: "#0d2e1a", border: `1.5px solid ${C.green}`, 
+                  color: C.green, padding: "3px 8px", fontFamily: "'Space Mono',monospace", fontSize: 11, fontWeight: 700
+                }}>
+                  {stock.score} / 10
+                </div>
+              </div>
+              <p style={{fontSize: 12, color: C.mid, lineHeight: 1.5, margin: 0}}>
+                {stock.rationale}
+              </p>
+              <button 
+                onClick={() => handleQuickAnalyse(stock.symbol)}
+                style={{
+                  fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, alignSelf: "flex-end",
+                  border: `1.5px solid ${C.black}`, background: "transparent", color: C.black, 
+                  padding: "5px 10px", cursor: "pointer", transition: "all 0.12s",
+                  boxShadow: "2px 2px 0px #0A0A0A"
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#e6ffe6"; e.currentTarget.style.color = C.green; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.black; }}
+              >
+                ANALYSE NOW ▶
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Short Term Column */}
+        <div style={{flex: "1 1 350px"}}>
+          <div style={{
+            fontFamily: "'Space Mono',monospace", fontSize: 10, letterSpacing: 2, textTransform: "uppercase", 
+            color: C.gold, borderLeft: `4px solid ${C.gold}`, paddingLeft: 10, marginBottom: 14
+          }}>
+            ⚡ Top 5 Short Term (ST) Picks
+          </div>
+
+          {activePicks.st?.map((stock, i) => (
+            <div key={stock.symbol} style={{
+              border: `2px solid ${C.black}`, 
+              boxShadow: "3px 3px 0px #0A0A0A", 
+              background: C.white, 
+              padding: 14, 
+              marginBottom: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8
+            }}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start"}}>
+                <div>
+                  <span style={{fontFamily: "'Bebas Neue',cursive", fontSize: 24, letterSpacing: 1, color: C.black}}>
+                    {i + 1}. {stock.symbol}
+                  </span>
+                  <div style={{fontFamily: "'Space Mono',monospace", fontSize: 9, color: "#888", marginTop: 2}}>
+                    {stock.name} · {stock.sector}
+                  </div>
+                </div>
+                <div style={{
+                  background: "#2e2100", border: `1.5px solid ${C.gold}`, 
+                  color: C.gold, padding: "3px 8px", fontFamily: "'Space Mono',monospace", fontSize: 11, fontWeight: 700
+                }}>
+                  {stock.score} / 10
+                </div>
+              </div>
+              <p style={{fontSize: 12, color: C.mid, lineHeight: 1.5, margin: 0}}>
+                {stock.rationale}
+              </p>
+              <button 
+                onClick={() => handleQuickAnalyse(stock.symbol)}
+                style={{
+                  fontFamily: "'Space Mono',monospace", fontSize: 9, fontWeight: 700, alignSelf: "flex-end",
+                  border: `1.5px solid ${C.black}`, background: "transparent", color: C.black, 
+                  padding: "5px 10px", cursor: "pointer", transition: "all 0.12s",
+                  boxShadow: "2px 2px 0px #0A0A0A"
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#fff9e6"; e.currentTarget.style.color = C.gold; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.black; }}
+              >
+                ANALYSE NOW ▶
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

@@ -97,16 +97,31 @@ The dependencies are defined inside `package.json`:
 * **Linting Utilities**: `eslint` (^10.x), `globals` (^17.x)
 
 ### Quick Installation
-1. Clone or copy the project files to your directory.
-2. Open your terminal in the project directory:
-   ```bash
-   npm install
-   ```
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-4. Access the application in your browser at `http://localhost:5173/`.
+1. Clone or copy the project files to your local directory.
+2. Open your terminal in the project directory.
+
+#### On Windows:
+Open PowerShell or Command Prompt:
+```powershell
+# Install dependencies
+npm install
+
+# Run the development server
+npm run dev
+```
+
+#### On macOS:
+Open Terminal:
+* *Pre-requisite*: Ensure Node.js is installed. You can install it using Homebrew (`brew install node`) or by downloading the installer from [nodejs.org](https://nodejs.org/).
+```bash
+# Install dependencies
+npm install
+
+# Run the development server
+npm run dev
+```
+
+3. Access the application in your browser at: **[http://localhost:5188/](http://localhost:5188/)**
 
 ### Building for Production
 To generate a production-ready, minified bundle:
@@ -131,6 +146,11 @@ The proxy configurations in `vite.config.js` route requests to `/api/<provider>`
 export default defineConfig({
   server: {
     proxy: {
+      '/api/yahoo': {
+        target: 'https://query1.finance.yahoo.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/yahoo/, '')
+      },
       '/api/anthropic': {
         target: 'https://api.anthropic.com',
         changeOrigin: true,
