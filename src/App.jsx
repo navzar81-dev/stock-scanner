@@ -118,6 +118,30 @@ function fmt(pct, portfolio, currencyVal) {
 
 function getYahooFinanceSymbol(symbol, exchange, marketFocus) {
   const sym = symbol ? symbol.trim().toUpperCase() : "";
+  
+  // Direct mapping for common global indices (case-insensitive checks, regardless of active exchange)
+  const indexMap = {
+    "S&P 500": "^GSPC",
+    "SPX": "^GSPC",
+    "NASDAQ 100": "^NDX",
+    "NDX": "^NDX",
+    "FTSE 100": "^FTSE",
+    "DAX 40": "^GDAXI",
+    "NIKKEI 225": "^N225",
+    "HANG SENG": "^HSI",
+    "MSCI WORLD": "URTH",
+    "S&P500": "^GSPC",
+    "NASDAQ100": "^NDX",
+    "FTSE100": "^FTSE",
+    "DAX40": "^GDAXI",
+    "NIKKEI225": "^N225",
+    "HANGSENG": "^HSI"
+  };
+
+  if (indexMap[sym]) {
+    return indexMap[sym];
+  }
+
   if (marketFocus === "indian") {
     if (exchange === "BSE") {
       return `${sym}.BO`;
@@ -126,17 +150,6 @@ function getYahooFinanceSymbol(symbol, exchange, marketFocus) {
   }
   
   if (exchange === "INDEX") {
-    const indexMap = {
-      "S&P 500": "^GSPC",
-      "SPX": "^GSPC",
-      "NASDAQ 100": "^NDX",
-      "NDX": "^NDX",
-      "FTSE 100": "^FTSE",
-      "DAX 40": "^GDAXI",
-      "NIKKEI 225": "^N225",
-      "HANG SENG": "^HSI",
-      "MSCI WORLD": "URTH"
-    };
     return indexMap[sym] || sym;
   }
 
