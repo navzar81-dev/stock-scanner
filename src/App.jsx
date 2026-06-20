@@ -740,6 +740,10 @@ export default function StockIntelligenceEngine() {
   const [twelvedataKey, setTwelvedataKey] = useState(() => localStorage.getItem("stock_scanner_twelvedata_key") || "");
   const [alphavantageKey, setAlphavantageKey] = useState(() => localStorage.getItem("stock_scanner_alphavantage_key") || "");
 
+  const [showTermsModal, setShowTermsModal] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+
   const [showSettings, setShowSettings] = useState(false);
 
   const timerRef = useRef(null);
@@ -1437,7 +1441,30 @@ Return EXACTLY this JSON (no extra keys, no markdown):
       `}</style>
 
       {/* HEADER */}
-      <div style={{background:C.black,padding:"28px 24px 24px",borderBottom:`4px solid ${C.gold}`}}>
+      <div style={{background:C.black,padding:"28px 24px 24px",borderBottom:`4px solid ${C.gold}`,position:"relative"}}>
+        {/* Floating Terms Link */}
+        <button onClick={() => setShowTermsModal(true)} style={{
+          position: "absolute",
+          top: 24,
+          right: 24,
+          background: "transparent",
+          border: `1.5px solid ${C.gold}`,
+          color: C.gold,
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 9,
+          padding: "4px 10px",
+          cursor: "pointer",
+          letterSpacing: 1,
+          textTransform: "uppercase",
+          transition: "all 0.15s",
+          zIndex: 999
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = C.gold; e.currentTarget.style.color = C.black; }}
+        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.gold; }}
+        >
+          📜 Terms & Conditions
+        </button>
+
         <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:C.gold,letterSpacing:3,textTransform:"uppercase",marginBottom:10}}>
           ▶ MULTI-MARKET INTELLIGENCE &nbsp;·&nbsp; NSE/BSE & GLOBAL &nbsp;·&nbsp; V3.0
         </div>
@@ -2631,6 +2658,292 @@ Return EXACTLY this JSON (no extra keys, no markdown):
           {/* Disclaimer */}
           <div style={{border: "2px solid #ccc", padding: "10px 14px", marginTop: 20, fontFamily: "'Space Mono',monospace", fontSize: 8, color: "#888", lineHeight: 1.5}}>
             ⚠ DISCLAIMER: AI-generated analysis based on data up to mid-2026. For educational purposes only. Not financial or SEBI-registered investment advice. Always verify with actual records before committing capital.
+          </div>
+        </div>
+      )}
+
+      {/* Terms and Conditions Modal */}
+      {showTermsModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          background: "rgba(0, 0, 0, 0.8)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          padding: 20
+        }}>
+          <div style={{
+            background: C.white,
+            border: `4px solid ${C.black}`,
+            boxShadow: "8px 8px 0px #000",
+            maxWidth: 680,
+            width: "100%",
+            maxHeight: "85vh",
+            display: "flex",
+            flexDirection: "column",
+            position: "relative"
+          }}>
+            <div style={{
+              background: C.black,
+              color: C.white,
+              padding: "14px 20px",
+              fontFamily: "'Space Mono', monospace",
+              fontSize: 12,
+              fontWeight: 700,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              borderBottom: `3px solid ${C.gold}`
+            }}>
+              <span>📜 TERMS & CONDITIONS & DISCLAIMERS</span>
+              <button onClick={() => setShowTermsModal(false)} style={{
+                background: "transparent",
+                border: "none",
+                color: C.white,
+                cursor: "pointer",
+                fontSize: 16,
+                fontWeight: "bold"
+              }}>✕</button>
+            </div>
+            
+            <div style={{
+              padding: 20,
+              overflowY: "auto",
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 12,
+              lineHeight: 1.6,
+              color: C.black
+            }}>
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 0, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>1. Acceptance of Terms</h3>
+              <p>By accessing or using this application ("App"), you acknowledge that you have read, understood, and agree to be bound by these Terms and Conditions. If you do not agree, do not use the App.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>2. Purpose of the App</h3>
+              <p>This App is provided strictly for educational and informational purposes only. It is designed to illustrate how AI-driven analysis can evaluate publicly available data across a defined set of parameters for Long-Term and Short-Term investment guidance. It is not a recommendation, solicitation, or offer to buy, sell, or hold any security or financial instrument.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>3. No SEBI Registration / Not Investment Advice</h3>
+              <p>This App and its operator(s) are not registered with the Securities and Exchange Board of India (SEBI) as an Investment Adviser, Research Analyst, Portfolio Manager, or in any other regulated capacity. Nothing contained in this App constitutes investment, financial, tax, or legal advice under the SEBI Act, 1992, the SEBI (Investment Advisers) Regulations, 2013, or any other applicable law. You must consult a SEBI-registered Investment Adviser or qualified financial professional before making any investment decision.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>4. AI-Generated Content — Limitations</h3>
+              <p>The analysis, scores, and outputs presented by this App are generated using artificial intelligence and algorithmic models. AI systems can and do make mistakes — including factual errors, outdated data, misinterpretation, or computational inaccuracies. All outputs must be independently verified before being relied upon in any manner.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>5. No Warranty of Accuracy</h3>
+              <p>The App is provided "as is" and "as available," without warranties of any kind, express or implied, including but not limited to accuracy, completeness, timeliness, or fitness for a particular purpose. Market data may be delayed, incomplete, or erroneous.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>6. User Responsibility</h3>
+              <p>You acknowledge and agree that:</p>
+              <ul>
+                <li>You are solely responsible for any investment or financial decision you make.</li>
+                <li>You will independently validate any guidance from this App using your own judgment, research, or third-party tools before acting on it.</li>
+                <li>Investments in securities markets are subject to market risk; past performance is not indicative of future results.</li>
+              </ul>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>7. Limitation of Liability</h3>
+              <p>To the fullest extent permitted by law, the App, its developers, operators, and affiliates shall not be liable for any direct, indirect, incidental, consequential, or special damages — including financial loss — arising from or related to your use of, or reliance on, the App or its content.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>8. Indemnification</h3>
+              <p>You agree to indemnify and hold harmless the App's developers and operators from any claims, losses, or liabilities arising from your use of the App or any investment decisions made in connection with it.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>9. Changes to These Terms</h3>
+              <p>These Terms may be updated at any time without prior notice. Continued use of the App after changes constitutes acceptance of the revised Terms.</p>
+              
+              <h3 style={{fontFamily: "'Bebas Neue', cursive", fontSize: 20, marginTop: 14, borderBottom: "1.5px solid #eaeaea", paddingBottom: 4}}>10. Governing Law</h3>
+              <p>These Terms shall be governed by and construed in accordance with the laws of India, subject to the exclusive jurisdiction of the courts at Mumbai, India.</p>
+              
+              <p style={{marginTop: 18, borderTop: "2px solid #ccc", paddingTop: 10, fontWeight: 700}}>
+                By using this App, you confirm that you understand this is an educational tool, not financial advice, and that you will consult a qualified, SEBI-registered professional before making any investment decisions.
+              </p>
+            </div>
+            
+            <div style={{
+              borderTop: `2px solid ${C.black}`,
+              padding: "12px 20px",
+              background: "#F5F0E8",
+              display: "flex",
+              justifyContent: "flex-end"
+            }}>
+              <button onClick={() => setShowTermsModal(false)} style={{
+                background: C.black,
+                color: C.white,
+                border: "none",
+                fontFamily: "'Space Mono', monospace",
+                fontSize: 10,
+                fontWeight: 700,
+                padding: "8px 20px",
+                cursor: "pointer",
+                boxShadow: "2px 2px 0px #444",
+                textTransform: "uppercase"
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.gold; e.currentTarget.style.color = C.black; }}
+              onMouseLeave={e => { e.currentTarget.style.background = C.black; e.currentTarget.style.color = C.white; }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Startup Welcome / Disclaimer Splash Modal */}
+      {showSplash && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          background: "rgba(0, 0, 0, 0.9)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9998,
+          padding: 20
+        }}>
+          <div style={{
+            background: C.white,
+            border: `5px solid ${C.black}`,
+            boxShadow: "10px 10px 0px #F4C430",
+            maxWidth: 600,
+            width: "100%",
+            maxHeight: "90vh",
+            display: "flex",
+            flexDirection: "column"
+          }}>
+            {/* Header banner */}
+            <div style={{
+              background: C.black,
+              color: C.white,
+              padding: "20px 24px",
+              borderBottom: `4px solid ${C.gold}`,
+              textAlign: "left"
+            }}>
+              <div style={{fontFamily: "'Space Mono', monospace", fontSize: 9, color: C.gold, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6}}>
+                ⚠️ REGULATORY DISCLAIMER & TERMS
+              </div>
+              <div style={{fontFamily: "'Bebas Neue', cursive", fontSize: 32, letterSpacing: 1.5, lineHeight: 1}}>
+                IMPORTANT DISCLAIMER
+              </div>
+            </div>
+
+            {/* Disclaimer text content */}
+            <div style={{
+              padding: "24px",
+              overflowY: "auto",
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 12,
+              lineHeight: 1.6,
+              color: C.black,
+              textAlign: "left"
+            }}>
+              <p style={{fontWeight: 700, fontSize: 13, marginBottom: 14}}>
+                This App is not registered with SEBI and does not provide investment advice under any SEBI regulation. It is built purely for educational purposes, offering AI-generated guideline scores across select parameters for Long-Term and Short-Term investing.
+              </p>
+              
+              <div style={{background: "#F5F0E8", border: `2px solid ${C.black}`, padding: 16, marginBottom: 18, display: "flex", flexDirection: "column", gap: 10}}>
+                <div style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
+                  <span style={{fontSize: 16}}>🤖</span>
+                  <span><strong>AI can make mistakes</strong> — always double-check outputs before relying on them.</span>
+                </div>
+                <div style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
+                  <span style={{fontSize: 16}}>🔍</span>
+                  <span><strong>Validate any guidance</strong> using your own research or tools before investing.</span>
+                </div>
+                <div style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
+                  <span style={{fontSize: 16}}>👨‍💼</span>
+                  <span><strong>Consult a SEBI-registered Investment Adviser</strong> before making financial decisions.</span>
+                </div>
+                <div style={{display: "flex", gap: 10, alignItems: "flex-start"}}>
+                  <span style={{fontSize: 16}}>📉</span>
+                  <span><strong>All investments carry market risk</strong>; past performance ≠ future results.</span>
+                </div>
+              </div>
+              
+              <p style={{fontSize: 11, color: C.mid, marginBottom: 14}}>
+                By continuing, you acknowledge this App offers no financial advice and that you are solely responsible for your investment decisions.
+              </p>
+
+              {/* Checkbox agreement */}
+              <label style={{
+                display: "flex", 
+                alignItems: "center", 
+                gap: 10, 
+                cursor: "pointer", 
+                userSelect: "none",
+                fontFamily: "'Space Mono', monospace", 
+                fontSize: 11,
+                fontWeight: 700,
+                border: `2px solid ${C.black}`,
+                padding: "10px 14px",
+                background: termsAccepted ? "#e8fdf0" : "transparent"
+              }}>
+                <input 
+                  type="checkbox" 
+                  checked={termsAccepted} 
+                  onChange={e => setTermsAccepted(e.target.checked)} 
+                  style={{
+                    width: 16, 
+                    height: 16, 
+                    cursor: "pointer", 
+                    accentColor: C.green
+                  }} 
+                />
+                <span>I have read and agree to the Terms & Conditions</span>
+              </label>
+            </div>
+
+            {/* Buttons footer */}
+            <div style={{
+              borderTop: `2px solid ${C.black}`,
+              padding: "16px 24px",
+              background: "#F5F0E8",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <button 
+                onClick={() => setShowTermsModal(true)} 
+                style={{
+                  background: "transparent",
+                  color: C.black,
+                  border: `2px solid ${C.black}`,
+                  fontFamily: "'Space Mono', monospace",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  transition: "all 0.15s"
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = C.black; e.currentTarget.style.color = C.white; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.black; }}
+              >
+                📜 View Full Terms
+              </button>
+              
+              <button 
+                onClick={() => { if (termsAccepted) setShowSplash(false); }} 
+                disabled={!termsAccepted}
+                style={{
+                  background: termsAccepted ? C.black : "#ccc",
+                  color: termsAccepted ? C.white : "#777",
+                  border: `2px solid ${C.black}`,
+                  fontFamily: "'Space Mono', monospace",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  padding: "10px 24px",
+                  cursor: termsAccepted ? "pointer" : "not-allowed",
+                  boxShadow: termsAccepted ? "3px 3px 0px #0A0A0A" : "none",
+                  transition: "all 0.15s"
+                }}
+                onMouseEnter={e => { if (termsAccepted) { e.currentTarget.style.background = C.gold; e.currentTarget.style.color = C.black; } }}
+                onMouseLeave={e => { if (termsAccepted) { e.currentTarget.style.background = C.black; e.currentTarget.style.color = C.white; } }}
+              >
+                Continue ▶
+              </button>
+            </div>
           </div>
         </div>
       )}
